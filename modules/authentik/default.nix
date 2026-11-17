@@ -440,7 +440,7 @@ print(f"source {slug}: sync queued")
     [
       "version: 1"
       "metadata:"
-      "  name: nix-config-proxy-apps"
+      "  name: swag-proxy-apps"
       "  labels:"
       "    blueprints.goauthentik.io/instantiate: \"true\""
       "entries:"
@@ -512,7 +512,7 @@ print(f"source {slug}: sync queued")
         else "cp ${v} $out/$(basename ${v})"
       ) cfg.blueprints)}
       # Auto-generated proxy-apps blueprint
-      ${optionalString hasProxyApps "cp ${proxyAppsBlueprint}/proxy-apps.yaml $out/proxy-apps.yaml"}
+      ${optionalString hasProxyApps "cp ${proxyAppsBlueprint}/proxy-apps.yaml $out/swag-proxy-apps.yaml"}
       # Directory LDAP source
       ${optionalString ds.enable "cp ${directorySourceBlueprint} $out/swag-directory-source.yaml"}
     '';
@@ -654,9 +654,9 @@ in
     # The password oneshot runs after the worker and uses check_password to
     # skip no-op rehashes.
     (mkIf hasUsers {
-      services.swag.authentik.blueprints."nix-config-users" = {
+      services.swag.authentik.blueprints."swag-users" = {
         version = 1;
-        metadata.name = "nix-config-users";
+        metadata.name = "swag-users";
         metadata.labels."blueprints.goauthentik.io/instantiate" = "true";
         entries = flatten (mapAttrsToList (name: u: [{
           model = "authentik_core.user";
