@@ -5,7 +5,7 @@
 # native authentik server + worker + migrate (DynamicUser, StateDirectory), an
 # optional local postgres, the proxy outpost (nginx forward auth) and LDAP
 # outpost (for apps that bind LDAP), agenix-assembled secrets, and an admin web
-# UI fronted by service-localweb (NOT upstream's services.authentik.nginx, which
+# UI fronted by swag web (NOT upstream's services.authentik.nginx, which
 # this module leaves off). State is relocatable to an external drive via a bind
 # mount.
 #
@@ -18,14 +18,14 @@
 #   # inputs.authentik-nix.inputs.nixpkgs.follows = "nixpkgs";  # see upstream README
 #
 #   # host modules.nix
-#   { authentik-nix, nix-config, ... }: {
+#   { authentik-nix, nixos-swag, ... }: {
 #     imports = [
 #       authentik-nix.nixosModules.default      # defines services.authentik.*
-#       nix-config.nixosModules.service-authentik
+#       nixos-swag.nixosModules.authentik
 #     ];
-#     cfg.authentik.enable = true;
-#     cfg.authentik.secrets.AUTHENTIK_SECRET_KEY = ./secrets/authentik-secret-key.age;
-#     cfg.authentik.stateDir = "${config.cfg.homelab.stateDir}/authentik";
+#     services.swag.authentik.enable = true;
+#     services.swag.authentik.secrets.AUTHENTIK_SECRET_KEY = ./secrets/authentik-secret-key.age;
+#     services.swag.authentik.stateDir = "${config.cfg.homelab.stateDir}/authentik";
 #   }
 #
 # Without that upstream import, `services.authentik` is undefined and this
@@ -39,7 +39,7 @@
 }:
 with lib;
 let
-  cfg = config.cfg.authentik;
+  cfg = config.services.swag.authentik;
 
   settingsFormat = pkgs.formats.yaml { };
 
@@ -89,16 +89,16 @@ let
   # option.
   hasUpstream = options.services ? authentik;
 
-  # service-localweb provides the nginx backbone + the cfg.localweb.vhosts map
-  # the admin UI registers with. service-dns provides the internal zone the
-  # admin subdomain is derived from. Both via guarded `options.cfg ? <infra>`
+  # swag web provides the nginx backbone + the services.swag.web.vhosts map
+  # the admin UI registers with. swag dns provides the internal zone the
+  # admin subdomain is derived from. Both via guarded `options.services ? swag.<module>`
   # checks so a host without them doesn't force the cfg namespace.
-  hasLocalweb = options.cfg ? localweb && config.cfg.localweb.enable;
-  hasLocaldns = options.cfg ? localdns && config.cfg.localdns.enable;
+  hasLocalweb = options.services ? swag.web && config.services.swag.web.enable;
+  hasLocaldns = options.services ? swag.dns && config.services.swag.dns.enable;
   hasCloudflared = options.services ? cloudflared && config.services.cloudflared.enable;
 
   # The local subdomain server_name for the admin UI vhost: "auth" under the
-  # service-dns internal zone. null when service-dns is absent AND no explicit
+  # swag dns internal zone. null when swag dns is absent AND no explicit
   # dashboard.domain — then there's no local vhost (public access via
   # dashboard.publicDomain + cloudflared, or the host sets up nginx manually).
   # A let binding, not a config contribution, so it cannot recurse (see the
@@ -107,7 +107,7 @@ let
     if cfg.dashboard.domain != null
     then cfg.dashboard.domain
     else if hasLocaldns
-    then "auth.${config.cfg.localdns.internalDomain}"
+    then "auth.${config.services.swag.dns.internalDomain}"
     else null;
 
   # Env files assembled by the authentik-secrets oneshot from age-decrypted
@@ -409,51 +409,51 @@ in
       assertions = [
         {
           assertion = hasUpstream;
-          message = "cfg.authentik.enable requires the upstream authentik-nix module on the host: import authentik-nix.nixosModules.default alongside nix-config.nixosModules.service-authentik.";
+          message = "services.swag.authentik.enable requires the upstream authentik-nix module on the host: import authentik-nix.nixosModules.default alongside nixos-swag.nixosModules.authentik.";
         }
         {
           assertion = cfg.environmentFile != null || cfg.secrets ? AUTHENTIK_SECRET_KEY;
-          message = "cfg.authentik needs AUTHENTIK_SECRET_KEY — set cfg.authentik.secrets.AUTHENTIK_SECRET_KEY (age file with `openssl rand -base64 60`) or cfg.authentik.environmentFile.";
+          message = "services.swag.authentik needs AUTHENTIK_SECRET_KEY — set services.swag.authentik.secrets.AUTHENTIK_SECRET_KEY (age file with `openssl rand -base64 60`) or services.swag.authentik.environmentFile.";
         }
         {
           assertion = !hasServerSecrets || hasAgenix;
-          message = "cfg.authentik.secrets requires agenix on the host (to decrypt the secret files).";
+          message = "services.swag.authentik.secrets requires agenix on the host (to decrypt the secret files).";
         }
         {
           assertion = !hasOutpostTokens || hasAgenix;
-          message = "cfg.authentik.outposts.*.tokenKeyFile requires agenix on the host (to decrypt the token key files).";
+          message = "services.swag.authentik.outposts.*.tokenKeyFile requires agenix on the host (to decrypt the token key files).";
         }
         {
           assertion = !(cfg.outposts.proxy.enable) || (cfg.outposts.proxy.tokenKeyFile != null && hasAgenix);
-          message = "cfg.authentik.outposts.proxy.enable requires outposts.proxy.tokenKeyFile (an age file containing the raw token key) and agenix on the host.";
+          message = "services.swag.authentik.outposts.proxy.enable requires outposts.proxy.tokenKeyFile (an age file containing the raw token key) and agenix on the host.";
         }
         {
           assertion = !(cfg.outposts.ldap.enable) || (cfg.outposts.ldap.tokenKeyFile != null && hasAgenix);
-          message = "cfg.authentik.outposts.ldap.enable requires outposts.ldap.tokenKeyFile (an age file containing the raw token key) and agenix on the host.";
+          message = "services.swag.authentik.outposts.ldap.enable requires outposts.ldap.tokenKeyFile (an age file containing the raw token key) and agenix on the host.";
         }
         {
           assertion = !hasProviderSecrets || hasAgenix;
-          message = "cfg.authentik.providerSecrets requires agenix on the host (age files are read at runtime to sync provider client secrets).";
+          message = "services.swag.authentik.providerSecrets requires agenix on the host (age files are read at runtime to sync provider client secrets).";
         }
         {
           assertion = !hasUserPasswords || hasAgenix;
-          message = "cfg.authentik.users.*.passwordFile requires agenix on the host (age files are read at runtime to hash+set user passwords).";
+          message = "services.swag.authentik.users.*.passwordFile requires agenix on the host (age files are read at runtime to hash+set user passwords).";
         }
         {
           assertion = cfg.apps == { } || cfg.outposts.proxy.enable;
-          message = "cfg.authentik.apps requires outposts.proxy.enable + outposts.proxy.tokenKeyFile — apps are auto-assigned to the proxy outpost via blueprint.";
+          message = "services.swag.authentik.apps requires outposts.proxy.enable + outposts.proxy.tokenKeyFile — apps are auto-assigned to the proxy outpost via blueprint.";
         }
         {
           assertion = cfg.dashboard.publicDomain == null || hasLocalweb;
-          message = "cfg.authentik.dashboard.publicDomain requires service-localweb (cfg.localweb) on the host — the admin UI is fronted by nginx, not exposed directly.";
+          message = "services.swag.authentik.dashboard.publicDomain requires swag web (services.swag.web) on the host — the admin UI is fronted by nginx, not exposed directly.";
         }
         {
           assertion = cfg.dashboard.publicDomain == null || hasCloudflared;
-          message = "cfg.authentik.dashboard.publicDomain requires service-cloudflared on the host — publicDomain is specifically for cloudflared ingress. Use the local subdomain (service-dns) for LAN access.";
+          message = "services.swag.authentik.dashboard.publicDomain requires nixos-cloudflared on the host — publicDomain is specifically for cloudflared ingress. Use the local subdomain (swag dns) for LAN access.";
         }
         {
           assertion = !(cfg.bootstrap.passwordFile != null && cfg.bootstrap.passwordHashFile != null);
-          message = "cfg.authentik.bootstrap: set passwordFile OR passwordHashFile, not both (authentik errors if AUTHENTIK_BOOTSTRAP_PASSWORD and AUTHENTIK_BOOTSTRAP_PASSWORD_HASH are both set).";
+          message = "services.swag.authentik.bootstrap: set passwordFile OR passwordHashFile, not both (authentik errors if AUTHENTIK_BOOTSTRAP_PASSWORD and AUTHENTIK_BOOTSTRAP_PASSWORD_HASH are both set).";
         }
       ];
     }
@@ -580,7 +580,7 @@ in
     # The password oneshot runs after the worker and uses check_password to
     # skip no-op rehashes.
     (mkIf hasUsers {
-      cfg.authentik.blueprints."nix-config-users" = {
+      services.swag.authentik.blueprints."nix-config-users" = {
         version = 1;
         metadata.name = "nix-config-users";
         metadata.labels."blueprints.goauthentik.io/instantiate" = "true";
@@ -594,7 +594,7 @@ in
             type = u.type;
             path = "users";
           };
-        }]) config.cfg.authentik.users);
+        }]) config.services.swag.authentik.users);
       };
 
       age.secrets = mapAttrs' (name: u:
@@ -771,14 +771,14 @@ in
       systemd.services.authentik-migrate.serviceConfig.DynamicUser = mkForce false;
     })
 
-    # ── Admin UI: local subdomain vhost via service-localweb ───────────────
+    # ── Admin UI: local subdomain vhost via swag web ───────────────
     (mkIf (hasLocalweb && effectiveDomain != null) {
-      cfg.localweb.vhosts.${effectiveDomain} = adminVhost;
+      services.swag.web.vhosts.${effectiveDomain} = adminVhost;
     })
 
     # ── Admin UI: public-domain vhost (same backend, for cloudflared) ──────
     (mkIf (hasLocalweb && cfg.dashboard.publicDomain != null) {
-      cfg.localweb.vhosts.${cfg.dashboard.publicDomain} = adminVhost;
+      services.swag.web.vhosts.${cfg.dashboard.publicDomain} = adminVhost;
     })
 
     # ── Cloudflared ingress to the public admin UI ──────────────────────────
@@ -793,13 +793,13 @@ in
     })
 
     # ── Forward-auth: auto-wire auth_request on localweb vhosts for apps ──────
-    # For each app in cfg.authentik.apps, extract the hostname from app.host
+    # For each app in services.swag.authentik.apps, extract the hostname from app.host
     # and set forwardAuth on the matching localweb vhost. The localweb module
     # then adds the auth_request + outpost locations to that vhost. Multiple
     # modules can contribute to the same vhost (NixOS merges attrsets), so
     # the hermes module sets host+port and this module sets forwardAuth.
     (mkIf (cfg.apps != { } && cfg.outposts.proxy.enable && hasLocalweb) {
-      cfg.localweb.vhosts = genAttrs (mapAttrsToList (_: app:
+      services.swag.web.vhosts = genAttrs (mapAttrsToList (_: app:
         # Extract hostname from app.host URL (e.g. "http://hermes.lan.io" → "hermes.lan.io")
         builtins.head (builtins.match "https?://([^:/]+).*" app.host)
       ) cfg.apps) (_: {

@@ -4,7 +4,7 @@
 }:
 with lib;
 {
-  options.cfg.localweb = {
+  options.services.swag.web = {
     enable = mkEnableOption "the shared nginx web backbone (subdomain port 80)";
 
     openFirewall = mkOption {
@@ -142,7 +142,7 @@ with lib;
                 vhost. When set, unauthenticated requests redirect to authentik
                 login; authenticated requests proceed to the backend. The
                 authentik module auto-sets this on vhosts matching
-                cfg.authentik.apps hostnames.
+                services.swag.authentik.apps hostnames.
               '';
             };
 
@@ -177,7 +177,7 @@ with lib;
               default = false;
               description = ''
                 Terminate TLS with an ACME-issued certificate for this vhost's
-                server_name. Requires cfg.localweb.acme.dnsCredentialFile (an
+                server_name. Requires services.swag.web.acme.dnsCredentialFile (an
                 age file containing a DNS API token for the zone). nginx
                 serves :443 ssl and the :80 vhost 301s to https; the backend
                 still receives plain http with X-Forwarded-Proto=https.
@@ -195,7 +195,7 @@ with lib;
         cloudflared's ingress map. Service modules register their web UI here
         (one entry: backend host + port) and this module emits the nginx
         virtualHost (listen on 80, proxyPass, recommended proxy settings) and
-        opens the firewall. Requires the host to run service-dns for the
+        opens the firewall. Requires the host to run swag dns for the
         server_name to resolve on the LAN. Set basicAuthFile for a vhost that
         must be password-gated (e.g. a public-domain vhost fronting cloudflared).
         Use scheme/extraLocations/extraConfig for backends that need more than a

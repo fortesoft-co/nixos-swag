@@ -20,15 +20,15 @@
 }:
 with lib;
 let
-  cfg = config.cfg.localdns;
+  cfg = config.services.swag.dns;
 in
 {
   imports = [ ./options.nix ];
 
   config = mkMerge [
     # Computed read-only value, set unconditionally so other modules and the
-    # host can reference config.cfg.localdns.internalDomain even when disabled.
-    { cfg.localdns.internalDomain = "${cfg.label}.${cfg.domain}"; }
+    # host can reference config.services.swag.dns.internalDomain even when disabled.
+    { services.swag.dns.internalDomain = "${cfg.label}.${cfg.domain}"; }
 
     (mkIf cfg.enable {
       services.dnsmasq = {

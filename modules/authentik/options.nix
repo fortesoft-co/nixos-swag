@@ -4,7 +4,7 @@
 }:
 with lib;
 {
-  options.cfg.authentik = {
+  options.services.swag.authentik = {
     enable = mkEnableOption "Authentik identity provider";
 
     # ── Freeform config (full authentik config.yml surface) ──────────────
@@ -17,7 +17,7 @@ with lib;
         the full escape hatch — any key from authentik's config reference can
         be set here and never lags upstream. Typed shorthands are merged
         underneath, so keys here win on leaf conflicts. Never put secrets here
-        (the Nix store is world-readable) — use cfg.authentik.secrets.
+        (the Nix store is world-readable) — use services.swag.authentik.secrets.
       '';
     };
 
@@ -41,7 +41,7 @@ with lib;
             default = null;
             description = ''
               SMTP username. The password is NOT set here — declare it via
-              cfg.authentik.secrets.AUTHENTIK_EMAIL__PASSWORD.
+              services.swag.authentik.secrets.AUTHENTIK_EMAIL__PASSWORD.
             '';
           };
           use_tls = mkOption {
@@ -64,7 +64,7 @@ with lib;
       default = { };
       description = ''
         Email shorthand → settings.email. The SMTP password is a secret —
-        declare it via cfg.authentik.secrets.AUTHENTIK_EMAIL__PASSWORD (the env
+        declare it via services.swag.authentik.secrets.AUTHENTIK_EMAIL__PASSWORD (the env
         var authentik reads for the password).
       '';
     };
@@ -79,7 +79,7 @@ with lib;
               Let this module provision a local postgresql database + user via
               services.authentik.createDatabase. Set false to use an external
               database (configure settings.postgresql yourself via
-              cfg.authentik.settings). The local postgres data lives at
+              services.swag.authentik.settings). The local postgres data lives at
               services.postgresql.dataDir (default /var/lib/postgresql) —
               relocate it separately if you need it on an external drive; this
               option does not manage the postgres data directory.
@@ -132,7 +132,7 @@ with lib;
       description = ''
         Path to a pre-existing environment file (systemd EnvironmentFile format)
         — the escape hatch for another secrets backend. Used only when
-        cfg.authentik.secrets is empty (otherwise the module's assembled env file
+        services.swag.authentik.secrets is empty (otherwise the module's assembled env file
         is used). Provide AUTHENTIK_SECRET_KEY (and any other required vars) in it.
       '';
     };
@@ -144,7 +144,7 @@ with lib;
           proxy = {
             enable = mkEnableOption "the authentik proxy outpost";
             # The proxy outpost serves nginx auth_request forward auth for apps
-            # registered in cfg.authentik.apps (the forward-auth wiring lands in
+            # registered in services.swag.authentik.apps (the forward-auth wiring lands in
             # a follow-up; enabling the outpost now makes it available).
             listenHTTP = mkOption {
               type = types.str;
@@ -215,7 +215,7 @@ with lib;
       default = "/var/lib/authentik";
       description = ''
         On-disk location of authentik state (the database is separate — see
-        cfg.authentik.database). Upstream uses systemd StateDirectory=authentik
+        services.swag.authentik.database). Upstream uses systemd StateDirectory=authentik
         with DynamicUser, which is kept intact; when this is not the default
         /var/lib/authentik, the module adds a bind mount
         /var/lib/authentik ← stateDir so the bytes physically live on the
@@ -238,17 +238,17 @@ with lib;
             default = null;
             description = ''
               server_name for the authentik admin UI nginx vhost. When null
-              and service-dns (cfg.localdns) is enabled, this defaults to
+              and swag dns (services.swag.dns) is enabled, this defaults to
               "auth" under the internal zone (auth.<internalDomain>) — so a
-              homelab running service-dns only needs cfg.authentik.enable, no
+              homelab running swag dns only needs services.swag.authentik.enable, no
               explicit domain. Set explicitly to override the auto-derived
-              subdomain. Requires service-localweb on the host (the admin UI
+              subdomain. Requires swag web on the host (the admin UI
               is fronted by nginx on the shared port 80, not by upstream's
               services.authentik.nginx, which this module leaves off). nginx
               proxies to authentik's HTTP listener (loopback:9000) so the
               external scheme is driven by X-Forwarded-Proto (http on port 80,
               https if the vhost is later TLS-fronted) — see the adminVhost
-              comment in service-authentik.nix for why :9000 not :9443.
+              comment in swag authentik.nix for why :9000 not :9443.
             '';
           };
 
@@ -259,7 +259,7 @@ with lib;
               Public domain for the authentik admin UI via cloudflared (e.g.
               auth.example.com). When set, registers a SECOND localweb vhost
               keyed by this domain (same backend) and points the cloudflared
-              ingress at nginx (port 80). Requires service-cloudflared on the
+              ingress at nginx (port 80). Requires nixos-cloudflared on the
               host. The admin UI is gated by authentik's own login — no nginx
               basicAuth is added (unlike a raw web app, authentik authenticates
               itself).
@@ -270,7 +270,7 @@ with lib;
       default = { };
       description = ''
         Authentik's own admin web UI. Local access is automatic when
-        service-localweb + service-dns are on the host (an "auth" subdomain is
+        swag web + swag dns are on the host (an "auth" subdomain is
         registered on port 80). nginx proxies to authentik's HTTP listener
         (loopback:9000); the external scheme follows X-Forwarded-Proto. Public
         access is via dashboard.publicDomain (cloudflared) — authentik's own
@@ -382,7 +382,7 @@ with lib;
         authentik only on the first startup while no admin exists; afterwards
         ignored (manage the admin via the UI/API/blueprints). For ongoing
         declarative config (apps, providers, flows, outposts), use
-        cfg.authentik.blueprints.
+        services.swag.authentik.blueprints.
       '';
     };
 
@@ -422,7 +422,7 @@ with lib;
         OAuth2 provider client secrets to enforce, keyed by provider NAME —
         each value is an age-encrypted file holding the raw client secret.
         A boot-time oneshot (authentik-provider-secret-setup) waits for the
-        provider to exist (declare it via cfg.authentik.blueprints, or make
+        provider to exist (declare it via services.swag.authentik.blueprints, or make
         it in the UI) and overwrites its client_secret with the file's value
         — the outpost-token pattern: the age file is the single source of
         truth for authentik AND the consumer app, so no UI copy step exists.
@@ -487,7 +487,7 @@ with lib;
       description = ''
         Open the firewall for the LDAP outpost (3389) when it is enabled and
         LAN-bound. The authentik server (9000/9443) binds loopback and is
-        fronted by service-localweb on port 80 (opened there), so no extra
+        fronted by swag web on port 80 (opened there), so no extra
         firewall hole is needed for the admin UI. Disable if you tunnel
         everything.
       '';

@@ -1,7 +1,7 @@
 # Local web — shared nginx backbone + the subdomain port + vhost registry.
 #
 # Centralizes nginx enable + recommended settings + ACME, and provides
-# cfg.localweb.vhosts — a server_name → { host, port, scheme?, extraLocations?,
+# services.swag.web.vhosts — a server_name → { host, port, scheme?, extraLocations?,
 # extraConfig?, basicAuthFile? } map (the nginx analog of cloudflared's ingress)
 # so service modules register a subdomain + backend in one entry and this module
 # emits the listen/proxyPass/auth/firewall plumbing. Opens port 80 so vhosts are
@@ -11,7 +11,7 @@
 # context-generic: an app that needs an HTTPS upstream (authentik on :9443),
 # static assets (/static/), or websockets (/ws/) supplies those via the registry
 # entry — localweb doesn't need to know about authentik. Composes with
-# service-dns (dnsmasq resolves *.<internalDomain> → this host) and cloudflared
+# swag dns (dnsmasq resolves *.<internalDomain> → this host) and cloudflared
 # (public domain ingress). A vhost with a basicAuthFile is password-gated — the
 # module declares the age secret (group = nginx) and wires the decrypted runtime
 # path; callers just supply the .age file.
@@ -24,7 +24,7 @@
 }:
 with lib;
 let
-  cfg = config.cfg.localweb;
+  cfg = config.services.swag.web;
 
   # agenix is optional — the module still works without it (no authed vhosts).
   hasAgenix = builtins.hasAttr "age" options;
@@ -206,15 +206,15 @@ in
       assertions = [
         {
           assertion = !(any (v: v.basicAuthFile != null) (attrValues cfg.vhosts)) || hasAgenix;
-          message = "cfg.localweb.vhosts.*.basicAuthFile requires agenix on the host (to decrypt the htpasswd).";
+          message = "services.swag.web.vhosts.*.basicAuthFile requires agenix on the host (to decrypt the htpasswd).";
         }
         {
           assertion = !haveTlsVhosts || cfg.acme.dnsCredentials != { };
-          message = "cfg.localweb.vhosts.*.tls requires cfg.localweb.acme.dnsCredentials (age files holding the DNS API credentials the cert's zone needs — for Cloudflare, CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL or a scoped CLOUDFLARE_DNS_API_TOKEN).";
+          message = "services.swag.web.vhosts.*.tls requires services.swag.web.acme.dnsCredentials (age files holding the DNS API credentials the cert's zone needs — for Cloudflare, CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL or a scoped CLOUDFLARE_DNS_API_TOKEN).";
         }
         {
           assertion = !haveTlsVhosts || hasAgenix;
-          message = "cfg.localweb.vhosts.*.tls requires agenix on the host (the DNS token rides in an age file).";
+          message = "services.swag.web.vhosts.*.tls requires agenix on the host (the DNS token rides in an age file).";
         }
       ];
     }

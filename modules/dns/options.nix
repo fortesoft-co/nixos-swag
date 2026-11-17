@@ -4,7 +4,7 @@
 }:
 with lib;
 {
-  options.cfg.localdns = {
+  options.services.swag.dns = {
     enable = mkEnableOption "local DNS server (dnsmasq) with a split-horizon zone";
 
     domain = mkOption {
@@ -13,7 +13,7 @@ with lib;
       description = ''
         The real (publicly-owned) apex domain to host a split-horizon zone
         under. The internal zone served by dnsmasq is "<label>.<domain>" (see
-        cfg.localdns.label). Use a domain you own so the internal zone is
+        services.swag.dns.label). Use a domain you own so the internal zone is
         future-proof — a name like "<service>.<label>.<domain>" can be dual-homed
         (internal via dnsmasq, public via a tunnel) without renaming.
 
@@ -29,7 +29,7 @@ with lib;
       type = types.str;
       default = "lan";
       description = ''
-        Subdomain label prepended to cfg.localdns.domain to form the internal
+        Subdomain label prepended to services.swag.dns.domain to form the internal
         zone, e.g. "lan" + "example.com" → "lan.example.com". The label is just
         a namespacing choice under a domain you own, so it has no reservation
         risk; common picks are "lan", "int", "svc", "home".
