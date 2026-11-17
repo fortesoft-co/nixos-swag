@@ -4,7 +4,7 @@
 # `services.authentik-{proxy,ldap}.*`) option set for an opinionated homelab IdP:
 # native authentik server + worker + migrate (DynamicUser, StateDirectory), an
 # optional local postgres, the proxy outpost (nginx forward auth) and LDAP
-# outpost (for apps that bind LDAP), agenix-assembled secrets, and an admin web
+# outpost (for apps that bind LDAP), secrets assembled from runtime files, and an admin web
 # UI fronted by swag web (NOT upstream's services.authentik.nginx, which
 # this module leaves off). State is relocatable to an external drive via a bind
 # mount.
@@ -18,7 +18,7 @@
 #   { nixos-swag, ... }: {
 #     imports = [ nixos-swag.nixosModules.authentik ];
 #     services.swag.authentik.enable = true;
-#     services.swag.authentik.secrets.AUTHENTIK_SECRET_KEY = ./secrets/authentik-secret-key.age;
+#     services.swag.authentik.secrets.AUTHENTIK_SECRET_KEY = config.age.secrets.authentik-secret-key.path;
 #   }
 {
   config,
@@ -33,12 +33,9 @@ let
 
   settingsFormat = pkgs.formats.yaml { };
 
-  # agenix is optional — the module still works without it (use environmentFile).
-  hasAgenix = builtins.hasAttr "age" options;
-
-  # Bootstrap password/hash/token are age files merged into the same env-file
-  # assembly as cfg.secrets (effectiveSecrets), so the existing one-shot
-  # assembly + age.secrets wiring handles them with no extra plumbing.
+  # Bootstrap password/hash/token are runtime files merged into the same
+  # env-file assembly as cfg.secrets (effectiveSecrets), so the one-shot
+  # assembly handles them with no extra plumbing.
   bootstrapSecrets =
     optionalAttrs (cfg.bootstrap.passwordFile != null) { AUTHENTIK_BOOTSTRAP_PASSWORD = cfg.bootstrap.passwordFile; }
     // optionalAttrs (cfg.bootstrap.passwordHashFile != null) { AUTHENTIK_BOOTSTRAP_PASSWORD_HASH = cfg.bootstrap.passwordHashFile; }
@@ -60,11 +57,11 @@ let
     };
   hasOutpostTokens = outpostTokens != { };
   needsAssembly = hasServerSecrets || hasOutpostTokens;
-  # OAuth2 provider client secrets (providerSecrets): name → age file. The
+  # OAuth2 provider client secrets (providerSecrets): name → runtime file. The
   # authentik-provider-secret-setup oneshot waits for the provider (created
   # by a blueprint or manually) and overwrites its client_secret with the
-  # declared value — the outpost-token pattern for OAuth2 clients: the age
-  # file is the single source of truth for BOTH authentik and the consumer.
+  # declared value — the outpost-token pattern for OAuth2 clients: the file
+  # is the single source of truth for BOTH authentik and the consumer.
   hasProviderSecrets = cfg.providerSecrets != { };
   # Fleet users: the module generates a users blueprint (existence only —
   # username/email/type; passwords never live in it) and a password-sync
@@ -94,8 +91,8 @@ let
     then "auth.${config.services.swag.dns.internalDomain}"
     else null;
 
-  # Env files assembled by the authentik-secrets oneshot from age-decrypted
-  # secrets (raw values → `KEY=value` lines). systemd loads EnvironmentFile as
+  # Env files assembled by the authentik-secrets oneshot from the runtime
+  # secret files (raw values → `KEY=value` lines). systemd loads EnvironmentFile as
   # root before ExecStart, so root-only 0600 files are fine — the DynamicUser
   # authentik process never reads them, it gets the vars via systemd. Non-secret
   # env rides on systemd Environment instead (see below), so these files are
@@ -141,9 +138,6 @@ let
       };
     };
   };
-
-  # Stable age secret name per outpost token.
-  outpostSecretName = name: "authentik-${name}-token";
 
   # Properties from the authentik service's serviceConfig, passed to
   # `systemd-run` so the outpost-setup oneshot can run `manage.py shell` in
@@ -393,31 +387,15 @@ in
       assertions = [
         {
           assertion = cfg.environmentFile != null || cfg.secrets ? AUTHENTIK_SECRET_KEY;
-          message = "services.swag.authentik needs AUTHENTIK_SECRET_KEY — set services.swag.authentik.secrets.AUTHENTIK_SECRET_KEY (age file with `openssl rand -base64 60`) or services.swag.authentik.environmentFile.";
+          message = "services.swag.authentik needs AUTHENTIK_SECRET_KEY — set services.swag.authentik.secrets.AUTHENTIK_SECRET_KEY (a runtime file holding `openssl rand -base64 60` output) or services.swag.authentik.environmentFile.";
         }
         {
-          assertion = !hasServerSecrets || hasAgenix;
-          message = "services.swag.authentik.secrets requires agenix on the host (to decrypt the secret files).";
+          assertion = !(cfg.outposts.proxy.enable) || cfg.outposts.proxy.tokenKeyFile != null;
+          message = "services.swag.authentik.outposts.proxy.enable requires outposts.proxy.tokenKeyFile (a runtime file containing the raw token key).";
         }
         {
-          assertion = !hasOutpostTokens || hasAgenix;
-          message = "services.swag.authentik.outposts.*.tokenKeyFile requires agenix on the host (to decrypt the token key files).";
-        }
-        {
-          assertion = !(cfg.outposts.proxy.enable) || (cfg.outposts.proxy.tokenKeyFile != null && hasAgenix);
-          message = "services.swag.authentik.outposts.proxy.enable requires outposts.proxy.tokenKeyFile (an age file containing the raw token key) and agenix on the host.";
-        }
-        {
-          assertion = !(cfg.outposts.ldap.enable) || (cfg.outposts.ldap.tokenKeyFile != null && hasAgenix);
-          message = "services.swag.authentik.outposts.ldap.enable requires outposts.ldap.tokenKeyFile (an age file containing the raw token key) and agenix on the host.";
-        }
-        {
-          assertion = !hasProviderSecrets || hasAgenix;
-          message = "services.swag.authentik.providerSecrets requires agenix on the host (age files are read at runtime to sync provider client secrets).";
-        }
-        {
-          assertion = !hasUserPasswords || hasAgenix;
-          message = "services.swag.authentik.users.*.passwordFile requires agenix on the host (age files are read at runtime to hash+set user passwords).";
+          assertion = !(cfg.outposts.ldap.enable) || cfg.outposts.ldap.tokenKeyFile != null;
+          message = "services.swag.authentik.outposts.ldap.enable requires outposts.ldap.tokenKeyFile (a runtime file containing the raw token key).";
         }
         {
           assertion = cfg.apps == { } || cfg.outposts.proxy.enable;
@@ -467,32 +445,15 @@ in
       systemd.services.authentik-migrate.environment = effectiveEnvironment;
     }
 
-    # ── Secrets: declare age secrets + assemble env files ───────────────────
-    # One convention everywhere: every age file holds the RAW value. The oneshot
+    # ── Secrets: assemble env files ─────────────────────────────────────────
+    # One convention everywhere: every secret file holds the RAW value. The oneshot
     # assembles `KEY=value` into a server env file (for `secrets` + bootstrap)
     # and a per-outpost env file (AUTHENTIK_TOKEN=<value>) for each outpost in
     # `outpostTokens`. systemd loads these as root before each service's
     # ExecStart; non-secret env rides on systemd Environment instead.
-    (mkIf hasServerSecrets {
-      age.secrets = mapAttrs' (k: v: nameValuePair k { file = v; }) effectiveSecrets;
-    })
-
-    (mkIf hasOutpostTokens {
-      age.secrets = mapAttrs' (name: tokenKeyFile: nameValuePair (outpostSecretName name) {
-        file = tokenKeyFile;
-      }) outpostTokens;
-    })
-
-    (mkIf hasProviderSecrets {
-      age.secrets = mapAttrs' (name: v:
-        nameValuePair "authentik-provider-secret-${name}" {
-          file = v;
-        }) cfg.providerSecrets;
-    })
-
     (mkIf needsAssembly {
       systemd.services.authentik-secrets = {
-        description = "Assemble authentik environment files from agenix secrets";
+        description = "Assemble authentik environment files from secret files";
         before = assemblyDependents;
         requiredBy = assemblyDependents;
         serviceConfig = {
@@ -509,15 +470,15 @@ in
                 # The \" here is inside the inner double-quoted Nix string (the
                 # mapAttrsToList lambda arg), where \" escapes to a literal " —
                 # so the produced shell line is printf '%s=%s\n' 'KEY' "$(cat ...)".
-                mapAttrsToList (k: _:
-                  "printf '%s=%s\n' '${k}' \"$(cat ${config.age.secrets.${k}.path})\""
+                mapAttrsToList (k: path:
+                  "printf '%s=%s\n' '${k}' \"$(cat ${path})\""
                 ) effectiveSecrets
               )}
             } > ${secretsEnvFile}
           ''}
           ${concatStringsSep "\n" (
-            mapAttrsToList (name: _:
-              "printf 'AUTHENTIK_TOKEN=%s\n' \"$(cat ${config.age.secrets.${outpostSecretName name}.path})\" > ${outpostEnvFile name}"
+            mapAttrsToList (name: path:
+              "printf 'AUTHENTIK_TOKEN=%s\n' \"$(cat ${path})\" > ${outpostEnvFile name}"
             ) outpostTokens
           )}
         '';
@@ -525,12 +486,12 @@ in
     })
 
     # ── Provider client secret sync ─────────────────────────────────────────
-    # Overwrite OAuth2Provider.client_secret from age files (providerSecrets).
+    # Overwrite OAuth2Provider.client_secret from secret files (providerSecrets).
     # Poll-waits for the provider (blueprints apply via the worker
     # asynchronously after boot); consumer units order after this unit.
     (mkIf hasProviderSecrets {
       systemd.services.authentik-provider-secret-setup = {
-        description = "Sync declarative OAuth2 provider client secrets from agenix";
+        description = "Sync declarative OAuth2 provider client secrets from secret files";
         after = [ "authentik-migrate.service" "authentik-worker.service" ];
         wantedBy = [ "multi-user.target" ];
         serviceConfig = {
@@ -540,15 +501,10 @@ in
         };
         path = [ pkgs.coreutils ];
         script = concatStringsSep "\n" (
-          # Must cat the DECRYPTED runtime path (config.age.secrets.<name>.path
-          # → /run/agenix/...), NOT the option value — that value is the .age
-          # file in the Nix store, and feeding ciphertext to --setenv makes
-          # systemd-run reject the multi-line env assignment
-          # ("Cannot assign environment variable PROVIDER_SECRET=...").
-          mapAttrsToList (name: _:
-            mkProviderSecretSetup name
-              config.age.secrets."authentik-provider-secret-${name}".path
-          ) cfg.providerSecrets
+          # The option value is the runtime path of the raw secret; a path to
+          # ciphertext would make systemd-run reject the multi-line env
+          # assignment ("Cannot assign environment variable PROVIDER_SECRET=...").
+          mapAttrsToList mkProviderSecretSetup cfg.providerSecrets
         );
       };
     })
@@ -577,14 +533,8 @@ in
         }]) config.services.swag.authentik.users);
       };
 
-      age.secrets = mapAttrs' (name: u:
-        nameValuePair "authentik-user-password-${name}" {
-          file = u.passwordFile;
-        }
-      ) (filterAttrs (_: u: u.passwordFile != null) cfg.users);
-
       systemd.services.authentik-user-password-setup = mkIf hasUserPasswords {
-        description = "Sync declarative authentik user passwords from agenix";
+        description = "Sync declarative authentik user passwords from secret files";
         after = [ "authentik-migrate.service" "authentik-worker.service" ];
         wantedBy = [ "multi-user.target" ];
         serviceConfig = {
@@ -596,8 +546,7 @@ in
         script = concatStringsSep "\n" (
           flatten (mapAttrsToList (name: u:
             optional (u.passwordFile != null) (
-              mkUserPasswordSetup name
-                config.age.secrets."authentik-user-password-${name}".path
+              mkUserPasswordSetup name u.passwordFile
             )
           ) cfg.users)
         );
@@ -607,8 +556,8 @@ in
     # ── Outpost auto-provision: create/update outpost + token in the DB ──────
     # An `ak shell` oneshot (runs as root, spawns a transient unit as the
     # authentik user via systemd-run) that creates/updates each enabled
-    # outpost and sets its token key to the pre-defined value from the age
-    # secret. Idempotent (get_or_create + token.key = ...). Runs after
+    # outpost and sets its token key to the pre-defined value from the token
+    # file. Idempotent (get_or_create + token.key = ...). Runs after
     # authentik-migrate (needs the DB schema) and authentik-secrets (needs
     # the server env file), before the outpost services (they need the
     # outpost + token to exist in the DB to authenticate).
@@ -630,14 +579,14 @@ in
         script = concatStringsSep "\n" (
           optional (outpostTokens ? proxy)
             (mkOutpostSetup "proxy" "authentik Embedded Proxy" "proxy"
-              config.age.secrets.${outpostSecretName "proxy"}.path
+              outpostTokens.proxy
               ''--setenv OUTPOST_HOST="http://localhost:9000"''
               (if effectiveDomain != null
                then ''--setenv OUTPOST_HOST_BROWSER="http://${effectiveDomain}"''
                else ''--setenv OUTPOST_HOST_BROWSER=""''))
           ++ optional (outpostTokens ? ldap)
             (mkOutpostSetup "ldap" "authentik Embedded LDAP" "ldap"
-              config.age.secrets.${outpostSecretName "ldap"}.path
+              outpostTokens.ldap
               ''--setenv OUTPOST_HOST="http://localhost:9000"''
               (if effectiveDomain != null
                then ''--setenv OUTPOST_HOST_BROWSER="http://${effectiveDomain}"''

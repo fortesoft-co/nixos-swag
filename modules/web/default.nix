@@ -12,28 +12,17 @@
 # static assets (/static/), or websockets (/ws/) supplies those via the registry
 # entry — localweb doesn't need to know about authentik. Composes with
 # swag dns (dnsmasq resolves *.<internalDomain> → this host) and cloudflared
-# (public domain ingress). A vhost with a basicAuthFile is password-gated — the
-# module declares the age secret (group = nginx) and wires the decrypted runtime
-# path; callers just supply the .age file.
+# (public domain ingress). A vhost with a basicAuthFile is password-gated by an
+# htpasswd file the host provides at runtime.
 {
   config,
   lib,
   pkgs,
-  options,
   ...
 }:
 with lib;
 let
   cfg = config.services.swag.web;
-
-  # agenix is optional — the module still works without it (no authed vhosts).
-  hasAgenix = builtins.hasAttr "age" options;
-
-  # vhosts that carry a basicAuthFile and so need an age secret declared.
-  authedVhosts = filterAttrs (_: v: v.basicAuthFile != null) cfg.vhosts;
-
-  # Stable secret name per vhost (server_name → attr key / /run/agenix filename).
-  secretName = name: "localweb-${builtins.replaceStrings [ "." ] [ "-" ] name}";
 
   # Vhosts terminating TLS (server_name → tls bool true), and the ACME cert
   # attrkey for a vhost (dots → dashes, so cert names stay valid unit-name
@@ -114,8 +103,8 @@ in
       };
 
             # One virtualHost per registered vhost on the shared subdomain port 80
-      # (server_name routing). basicAuthFile, when set, points at the
-      # agenix-decrypted htpasswd (declared below) so the nginx worker can read it.
+      # (server_name routing). basicAuthFile, when set, is the host's runtime
+      # htpasswd file, read by the nginx worker.
       # scheme/extraLocations/extraConfig are passed through verbatim — this
       # module stays generic, app-specific nginx lives in the registering module.
       # forwardAuth, when set, adds auth_request + the authentik outpost locations.
@@ -148,25 +137,14 @@ in
         }
         // optionalAttrs (v.extraConfig != "") { extraConfig = v.extraConfig; }
         // faExtra
-        // optionalAttrs (v.basicAuthFile != null && hasAgenix) {
-          basicAuthFile = config.age.secrets.${secretName name}.path;
+        // optionalAttrs (v.basicAuthFile != null) {
+          inherit (v) basicAuthFile;
         })
       ) cfg.vhosts;
 
       # Shared subdomain port — every vhost is reachable by name once open.
       networking.firewall.allowedTCPPorts = optional cfg.openFirewall 80;
     }
-
-    # Declare an age secret per authed vhost, group-readable by nginx so the
-    # worker can read the decrypted htpasswd at request time.
-    (mkIf hasAgenix {
-      age.secrets = mapAttrs' (name: v:
-        nameValuePair (secretName name) {
-          file = v.basicAuthFile;
-          group = "nginx";
-        }
-      ) authedVhosts;
-    })
 
     # ACME DNS-01 certificates for TLS vhosts. DNS-01 only writes TXT records
     # in the DNS zone — the origin keeps plain http, so these certs never
@@ -175,21 +153,16 @@ in
     # credential indirection (this channel's security.acme renamed
     # credentialsFile → credentialFiles, whose keys must be <VAR>_FILE/
     # <VAR>_PATH): each dnsCredentials entry maps the env var name lego's DNS
-    # provider expects (e.g. CLOUDFLARE_API_KEY) to an age file, declared
-    # here and bound as <VAR>_FILE for the acme units — the acme service
-    # resolves the file content into <VAR> itself.
+    # provider expects (e.g. CLOUDFLARE_API_KEY) to a runtime file, bound as
+    # <VAR>_FILE for the acme units — the acme service resolves the file
+    # content into <VAR> itself.
     (mkIf haveTlsVhosts {
-      age.secrets = mapAttrs' (envVar: v:
-        nameValuePair envVar {
-          file = v;
-        }) cfg.acme.dnsCredentials;
-
       security.acme.certs = mapAttrs' (name: v:
         nameValuePair (certName name) {
           domain = name;
           dnsProvider = cfg.acme.dnsProvider;
-          credentialFiles = mapAttrs' (envVar: _v:
-            nameValuePair "${envVar}_FILE" (config.age.secrets.${envVar}.path)
+          credentialFiles = mapAttrs' (envVar: path:
+            nameValuePair "${envVar}_FILE" path
           ) cfg.acme.dnsCredentials;
           group = "nginx";
           reloadServices = [ "nginx" ];
@@ -198,20 +171,11 @@ in
       networking.firewall.allowedTCPPorts = [ 443 ];
     })
 
-    # An authed vhost requires agenix on the host (to decrypt the htpasswd).
     {
       assertions = [
         {
-          assertion = !(any (v: v.basicAuthFile != null) (attrValues cfg.vhosts)) || hasAgenix;
-          message = "services.swag.web.vhosts.*.basicAuthFile requires agenix on the host (to decrypt the htpasswd).";
-        }
-        {
           assertion = !haveTlsVhosts || cfg.acme.dnsCredentials != { };
-          message = "services.swag.web.vhosts.*.tls requires services.swag.web.acme.dnsCredentials (age files holding the DNS API credentials the cert's zone needs — for Cloudflare, CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL or a scoped CLOUDFLARE_DNS_API_TOKEN).";
-        }
-        {
-          assertion = !haveTlsVhosts || hasAgenix;
-          message = "services.swag.web.vhosts.*.tls requires agenix on the host (the DNS token rides in an age file).";
+          message = "services.swag.web.vhosts.*.tls requires services.swag.web.acme.dnsCredentials (runtime files holding the DNS API credentials the cert's zone needs — for Cloudflare, CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL or a scoped CLOUDFLARE_DNS_API_TOKEN).";
         }
       ];
     }

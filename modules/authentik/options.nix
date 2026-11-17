@@ -3,6 +3,9 @@
   ...
 }:
 with lib;
+let
+  inherit (import ../../lib/types.nix { inherit lib; }) secretPath;
+in
 {
   options.services.swag.authentik = {
     enable = mkEnableOption "Authentik identity provider";
@@ -91,24 +94,24 @@ with lib;
       description = "Database configuration shorthand.";
     };
 
-    # ── Secrets (agenix) ─────────────────────────────────────────────────
+    # ── Secrets (runtime files) ─────────────────────────────────────────────────
     secrets = mkOption {
-      type = types.attrsOf types.path;
+      type = types.attrsOf secretPath;
       default = { };
       example = literalExpression ''
         {
-          AUTHENTIK_SECRET_KEY = ./secrets/authentik-secret-key.age;
-          AUTHENTIK_EMAIL__PASSWORD = ./secrets/authentik-email.age;
+          AUTHENTIK_SECRET_KEY = config.age.secrets.authentik-secret-key.path;
+          AUTHENTIK_EMAIL__PASSWORD = "/run/secrets/authentik-email";
         }
       '';
       description = ''
-        Age-encrypted secrets injected as environment variables at runtime.
-        Each attribute maps an env var name (as authentik expects it, e.g.
-        AUTHENTIK_SECRET_KEY, AUTHENTIK_EMAIL__PASSWORD) to an age-encrypted
-        file containing the raw value. The module declares the age secrets and
-        assembles them into a single environment file consumed by
-        services.authentik.environmentFile — values are decrypted to /run/agenix
-        and never written to the Nix store. Requires agenix on the host.
+        Secrets injected as environment variables at runtime. Each attribute
+        maps an env var name (as authentik expects it, e.g.
+        AUTHENTIK_SECRET_KEY, AUTHENTIK_EMAIL__PASSWORD) to the runtime path
+        of a file holding the raw value, from any secrets tool (agenix,
+        sops-nix, ...). The module assembles them into a single root-only
+        environment file consumed by services.authentik.environmentFile, so
+        the values never reach the Nix store.
 
         AUTHENTIK_SECRET_KEY is mandatory (authentik won't start without it);
         generate one with `openssl rand -base64 60`.
@@ -127,7 +130,7 @@ with lib;
     };
 
     environmentFile = mkOption {
-      type = types.nullOr types.path;
+      type = types.nullOr secretPath;
       default = null;
       description = ''
         Path to a pre-existing environment file (systemd EnvironmentFile format)
@@ -158,16 +161,16 @@ with lib;
               '';
             };
             tokenKeyFile = mkOption {
-              type = types.nullOr types.path;
+              type = types.nullOr secretPath;
               default = null;
               description = ''
-                Age-encrypted file containing the raw outpost token key. The
+                Runtime path to a file containing the raw outpost token key. The
                 module auto-provisions the outpost + token in authentik's
                 database on every boot via an `ak shell` oneshot, setting the
                 token key to this value — no admin UI step needed and
-                reprovision-safe (the key is in the age secret, not
-                auto-generated). Generate with e.g. `openssl rand -hex 32`,
-                agenix-encrypt the raw value. Required when
+                reprovision-safe (the key comes from the file, not
+                auto-generated). Generate with e.g. `openssl rand -hex 32`
+                and keep it in your secrets tool. Required when
                 outposts.proxy.enable is true.
               '';
             };
@@ -186,10 +189,10 @@ with lib;
               '';
             };
             tokenKeyFile = mkOption {
-              type = types.nullOr types.path;
+              type = types.nullOr secretPath;
               default = null;
               description = ''
-                Age-encrypted file containing the raw outpost token key. Same
+                Runtime path to a file containing the raw outpost token key. Same
                 convention as outposts.proxy.tokenKeyFile. Required when
                 outposts.ldap.enable is true.
               '';
@@ -202,8 +205,8 @@ with lib;
         Authentik outposts. The proxy outpost serves nginx forward auth
         (auth_request) for web apps; the LDAP outpost serves apps that
         authenticate via LDAP. Each enabled outpost needs a token key —
-        declare it via outposts.<name>.tokenKeyFile (an age-encrypted file
-        with the raw key). The module auto-provisions the outpost + token in
+        declare it via outposts.<name>.tokenKeyFile (a runtime file holding
+        the raw key). The module auto-provisions the outpost + token in
         authentik's database on every boot via an `ak shell` oneshot, so no
         admin UI step is needed and the setup is reprovision-safe.
       '';
@@ -345,31 +348,31 @@ with lib;
             '';
           };
           passwordFile = mkOption {
-            type = types.nullOr types.path;
+            type = types.nullOr secretPath;
             default = null;
             description = ''
-              Age-encrypted file containing the plaintext akadmin password
+              Runtime path to a file containing the plaintext akadmin password
               (mapped to AUTHENTIK_BOOTSTRAP_PASSWORD, read only on first
-              start). Mutually exclusive with passwordHashFile. The file is
-              decrypted to /run and assembled into the root-only env file —
-              never the Nix store.
+              start). Mutually exclusive with passwordHashFile. The value is
+              assembled into the root-only env file at runtime — never the
+              Nix store.
             '';
           };
           passwordHashFile = mkOption {
-            type = types.nullOr types.path;
+            type = types.nullOr secretPath;
             default = null;
             description = ''
-              Age-encrypted file containing a pre-hashed akadmin password (the
+              Runtime path to a file containing a pre-hashed akadmin password (the
               value of AUTHENTIK_BOOTSTRAP_PASSWORD_HASH). Preferred over
               passwordFile. Generate the hash with the upstream `ak` helper
               (e.g. `ak hash_password`). Mutually exclusive with passwordFile.
             '';
           };
           tokenFile = mkOption {
-            type = types.nullOr types.path;
+            type = types.nullOr secretPath;
             default = null;
             description = ''
-              Age-encrypted file containing an API token for akadmin
+              Runtime path to a file containing an API token for akadmin
               (AUTHENTIK_BOOTSTRAP_TOKEN), seeded on first start. Lets you drive
               authentik via API/Terraform after bootstrap without a GUI login.
             '';
@@ -416,18 +419,18 @@ with lib;
 
     # ── Provider client secrets (the outpost-token pattern for OAuth2) ───────
     providerSecrets = mkOption {
-      type = types.attrsOf types.path;
+      type = types.attrsOf secretPath;
       default = { };
       description = ''
         OAuth2 provider client secrets to enforce, keyed by provider NAME —
-        each value is an age-encrypted file holding the raw client secret.
+        each value is the runtime path of a file holding the raw client secret.
         A boot-time oneshot (authentik-provider-secret-setup) waits for the
         provider to exist (declare it via services.swag.authentik.blueprints, or make
         it in the UI) and overwrites its client_secret with the file's value
-        — the outpost-token pattern: the age file is the single source of
+        — the outpost-token pattern: the file is the single source of
         truth for authentik AND the consumer app, so no UI copy step exists.
         Consumer units should order after
-        authentik-provider-secret-setup.service. Requires agenix.
+        authentik-provider-secret-setup.service.
       '';
     };
 
@@ -456,14 +459,15 @@ with lib;
             '';
           };
           passwordFile = mkOption {
-            type = types.nullOr types.path;
+            type = types.nullOr secretPath;
             default = null;
             description = ''
-              Age-encrypted file holding the raw password. A boot-time oneshot
+              Runtime path to a file holding the raw password. A boot-time oneshot
               (authentik-user-password-setup) poll-waits for the user (the
               users blueprint applies via the worker asynchronously) and
-              hashes+sets the password ONLY when it differs — rotating the
-              age file + rebuild changes the password; untouched, nothing
+              hashes+sets the password ONLY when it differs — changing the
+              file and re-running the oneshot (a switch does) changes the
+              password; untouched, nothing
               rehashes and no sessions drop. authentik hashes passwords
               server-side; the declared file remains the single source of
               truth.

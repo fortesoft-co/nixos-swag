@@ -3,6 +3,9 @@
   ...
 }:
 with lib;
+let
+  inherit (import ../../lib/types.nix { inherit lib; }) secretPath;
+in
 {
   options.services.swag.web = {
     enable = mkEnableOption "the shared nginx web backbone (subdomain port 80)";
@@ -31,19 +34,19 @@ with lib;
             '';
           };
           dnsCredentials = mkOption {
-            type = types.attrsOf types.path;
+            type = types.attrsOf secretPath;
             default = { };
             example = literalExpression ''
               {
-                CLOUDFLARE_DNS_API_TOKEN = ./secrets/dns-token.age;
+                CLOUDFLARE_DNS_API_TOKEN = config.age.secrets.dns-token.path;
               }
             '';
             description = ''
               DNS API credentials for answering DNS-01 challenges, keyed by
-              the env var name lego's DNS provider expects. The module
-              declares each value as an age secret and assembles
-              KEY=value lines into the env-style credential file lego reads
-              at issuance and renewal. For cloudflare: a scoped API token
+              the env var name lego's DNS provider expects; each value is
+              the runtime path of a file holding the raw credential. The
+              acme units read each file through systemd credentials
+              (<VAR>_FILE) at issuance and renewal. For cloudflare: a scoped API token
               maps to CLOUDFLARE_DNS_API_TOKEN, the global key to
               CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL. Empty = no TLS vhost
               may be declared on this host.
@@ -110,16 +113,15 @@ with lib;
             };
 
             basicAuthFile = mkOption {
-              type = types.nullOr types.path;
+              type = types.nullOr secretPath;
               default = null;
               description = ''
-                Age-encrypted htpasswd file for HTTP basic auth on this vhost.
-                null = no auth. This module declares the age secret with
-                group = "nginx" (so the nginx worker can read the decrypted file
-                at request time) and wires the runtime path into the nginx vhost
-                - callers just provide the .age file. Generate the htpasswd with e.g.
-                `htpasswd -cB hermes_htpasswd <user>` then agenix-encrypt it.
-                Plaintext passwords must never be in the Nix store.
+                Runtime path to an htpasswd file for HTTP basic auth on this
+                vhost. null = no auth. nginx workers read it at request time,
+                so it must be readable by the nginx group (e.g. agenix
+                `group = "nginx"`). Generate it with e.g.
+                `htpasswd -cB htpasswd <user>`; it must never be in the Nix
+                store.
               '';
             };
 
@@ -177,8 +179,9 @@ with lib;
               default = false;
               description = ''
                 Terminate TLS with an ACME-issued certificate for this vhost's
-                server_name. Requires services.swag.web.acme.dnsCredentialFile (an
-                age file containing a DNS API token for the zone). nginx
+                server_name. Requires services.swag.web.acme.dnsCredentials
+                (the DNS API credentials for the zone) and
+                security.acme.acceptTerms. nginx
                 serves :443 ssl and the :80 vhost 301s to https; the backend
                 still receives plain http with X-Forwarded-Proto=https.
                 Apps whose prod-mode cookies are forced Secure (outline)
