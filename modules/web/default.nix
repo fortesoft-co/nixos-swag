@@ -105,9 +105,6 @@ in
 
   config = mkIf cfg.enable (mkMerge [
     {
-      security.acme.acceptTerms = true;
-      security.acme.defaults.email = config.cfg.user.email;
-
       services.nginx = {
         enable = true;
         recommendedGzipSettings = true;

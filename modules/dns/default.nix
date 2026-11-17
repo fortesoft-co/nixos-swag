@@ -3,8 +3,8 @@
 # Serves a wildcard A record so every vhost server_name under the internal
 # zone resolves to this host without per-service DNS records — the standard
 # building block for subdomain-based access to local web services. Non-local
-# queries are forwarded to cfg.networking.domain_name_servers (set by
-# service-networking), so upstream resolution is unchanged. The host's own
+# queries are forwarded to upstreamServers, so upstream resolution is
+# unchanged. The host's own
 # resolver can optionally be repointed at the local dnsmasq (useAsHostResolver)
 # so the host resolves its own zone.
 #
@@ -50,18 +50,14 @@ in
             [ "/${cfg.internalDomain}/${cfg.address}" ]
             ++ (mapAttrsToList (name: ip: "/${name}/${ip}") cfg.extraRecords);
 
-          # Upstream forwarders — compose with service-networking's
-          # domain_name_servers (the host's existing upstream/gateway).
-          server = [
-            config.cfg.networking.domain_name_servers.primary
-            config.cfg.networking.domain_name_servers.secondary
-          ];
+          # Upstream forwarders for everything outside the internal zone.
+          server = cfg.upstreamServers;
         };
       };
 
       # Repoint the host's own resolver at the local dnsmasq so the host
-      # resolves its own internal zone. mkForce wins over service-networking's
-      # static `networking.nameservers = [...]` (plain assignment, priority 100).
+      # resolves its own internal zone. mkForce wins over a plain
+      # `networking.nameservers = [...]` elsewhere (priority 100).
       # dnsmasq forwards non-local queries to the original upstreams, so nothing
       # is lost.
       networking.nameservers = mkIf cfg.useAsHostResolver (mkForce [ "127.0.0.1" ]);

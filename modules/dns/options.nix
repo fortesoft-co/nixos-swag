@@ -50,9 +50,20 @@ with lib;
       example = "192.168.1.10";
       description = ''
         IPv4 address that "*.\${internalDomain}" and "\${internalDomain}" resolve
-        to via a dnsmasq wildcard record. Typically the host's LAN IP (from
-        cfg.networking.static.interfaces) so LAN clients reach this host's
-        services by name. Defaults to loopback — set explicitly for a homelab.
+        to via a dnsmasq wildcard record. Typically the host's LAN IP, so LAN
+        clients reach this host's services by name. Defaults to loopback — set
+        explicitly for a homelab.
+      '';
+    };
+
+    upstreamServers = mkOption {
+      type = types.nonEmptyListOf types.str;
+      example = [ "192.168.1.1" "9.9.9.9" ];
+      description = ''
+        Resolvers dnsmasq forwards everything outside the internal zone to,
+        typically the gateway and/or a public resolver. dnsmasq ignores
+        /etc/resolv.conf (no-resolv), so without these nothing outside the
+        internal zone resolves.
       '';
     };
 
@@ -80,9 +91,8 @@ with lib;
         Repoint this host's own resolver to 127.0.0.1 (the local dnsmasq) so
         the host resolves its own internal zone (e.g. "hermes.lan.example.com"
         from the host itself). dnsmasq forwards non-local queries to
-        cfg.networking.domain_name_servers, so upstream resolution is
-        preserved. Uses mkForce to override service-networking's static
-        `networking.nameservers` assignment.
+        upstreamServers, so upstream resolution is preserved. Uses mkForce to
+        override any other `networking.nameservers` assignment.
       '';
     };
 
