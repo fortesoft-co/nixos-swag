@@ -11,7 +11,8 @@ copies in the unit's private /tmp.
 
 Users and groups are created when missing; email and display name follow
 config; group memberships are only added. Initial passwords are set only
-for users this run created.
+for users this run created; managed passwords (service accounts) whenever
+the account can't bind with them.
 """
 
 import json
@@ -67,11 +68,32 @@ def gql(token, query, variables=None):
     return out["data"]
 
 
-def set_password(admin_pw_file, user, password):
-    pw_file = os.path.join(tmp, "new-password")
-    fd = os.open(pw_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def write_private(name, value):
+    path = os.path.join(tmp, name)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(password)
+        f.write(value)
+    return path
+
+
+def can_bind(user, password):
+    pw_file = write_private("check-password", password)
+    try:
+        return subprocess.run(
+            [
+                cfg["ldapwhoami"], "-x", "-H", cfg["ldapUrl"],
+                "-D", "uid=%s,ou=people,%s" % (user, cfg["baseDn"]),
+                "-y", pw_file,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+    finally:
+        os.unlink(pw_file)
+
+
+def set_password(admin_pw_file, user, password):
+    pw_file = write_private("new-password", password)
     try:
         subprocess.run(
             [
@@ -92,10 +114,7 @@ def set_password(admin_pw_file, user, password):
 admin_password = read_secret("admin-password")
 token = login(admin_password)
 tmp = tempfile.mkdtemp()  # the unit's PrivateTmp, mode 0700
-admin_pw_file = os.path.join(tmp, "admin-password")
-fd = os.open(admin_pw_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-with os.fdopen(fd, "w") as f:
-    f.write(admin_password)
+admin_pw_file = write_private("admin-password", admin_password)
 
 state = gql(
     token,
@@ -144,6 +163,12 @@ for name, u in cfg["users"].items():
             )
             print("user %s: updated %s" % (name, ", ".join(k for k in update if k != "id")))
         have = {g["displayName"] for g in cur["groups"]}
+
+    if u["managedPassword"]:
+        password = read_secret("user-" + name)
+        if not can_bind(name, password):
+            set_password(admin_pw_file, name, password)
+            print("user %s: managed password set" % name)
 
     for g in u["groups"]:
         if g not in have:

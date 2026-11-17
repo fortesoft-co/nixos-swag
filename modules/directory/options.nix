@@ -130,6 +130,17 @@ in
                 systemd credential, so only that unit can read it.
               '';
             };
+            passwordFile = mkOption {
+              type = types.nullOr secretPath;
+              default = null;
+              description = ''
+                Runtime path to a file holding a password that config owns,
+                readable by root: provisioning sets it whenever the account
+                can't bind with it. Meant for service accounts other modules
+                bind as (e.g. Authentik's). Mutually exclusive with
+                initialPasswordFile; same credential handling.
+              '';
+            };
           };
         }
       );

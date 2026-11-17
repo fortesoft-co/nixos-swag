@@ -434,6 +434,68 @@ in
       '';
     };
 
+    # ── Directory source: users and groups from LDAP ────────────────────────
+    directorySource = {
+      enable = mkEnableOption ''
+        syncing users and groups from an LDAP directory. With
+        services.swag.directory on the same host the connection is
+        configured for you, including Authentik's own bind account there
+      '';
+      name = mkOption {
+        type = types.str;
+        default = "Directory";
+        description = "Display name of the LDAP source in Authentik.";
+      };
+      slug = mkOption {
+        type = types.str;
+        default = "directory";
+        description = "Slug of the LDAP source in Authentik (its stable identifier).";
+      };
+      url = mkOption {
+        type = types.str;
+        example = "ldap://127.0.0.1:3890";
+        description = ''
+          LDAP server URI. Defaults to the local services.swag.directory
+          listener when that module is enabled on this host.
+        '';
+      };
+      baseDn = mkOption {
+        type = types.str;
+        example = "dc=example,dc=com";
+        description = ''
+          Base DN of the directory. Defaults to services.swag.directory.baseDn
+          when that module is enabled on this host.
+        '';
+      };
+      bindUser = mkOption {
+        type = types.str;
+        default = "authentik";
+        description = ''
+          Directory account Authentik binds as (uid under ou=people). With
+          services.swag.directory on this host the account is declared there
+          automatically, in lldap_password_manager when passwordWriteback is
+          on (lldap_strict_readonly otherwise).
+        '';
+      };
+      bindPasswordFile = mkOption {
+        type = secretPath;
+        description = ''
+          Runtime path to a file holding the bind account's password,
+          readable by root. It reaches only the unit that stores it in
+          Authentik, as a systemd credential; with services.swag.directory on
+          this host it is also the account's managed password there.
+        '';
+      };
+      passwordWriteback = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Write password changes made in Authentik back to the directory, so
+          the directory stays the source of truth for passwords too.
+        '';
+      };
+    };
+
     # ── Fleet users: declarative authentik users ────────────────────────────
     users = mkOption {
       type = types.attrsOf (types.submodule {

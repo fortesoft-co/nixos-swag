@@ -81,6 +81,63 @@ let
   hasLocalweb = options.services ? swag.web && config.services.swag.web.enable;
   hasLocaldns = options.services ? swag.dns && config.services.swag.dns.enable;
   hasCloudflared = options.services ? cloudflared && config.services.cloudflared.enable;
+  directoryDeclared = options.services ? swag.directory;
+  hasDirectory = directoryDeclared && config.services.swag.directory.enable;
+
+  # LDAP source for the directory: a blueprint for the source itself (raw
+  # YAML for the !Find tags) plus a oneshot that stores the bind password,
+  # which must not sit in a store-path blueprint, and queues a first sync.
+  ds = cfg.directorySource;
+  bindDn = "uid=${ds.bindUser},ou=people,${ds.baseDn}";
+  findLdapMapping =
+    m: "!Find [authentik_sources_ldap.ldapsourcepropertymapping, [managed, goauthentik.io/sources/ldap/${m}]]";
+  q = builtins.toJSON;
+  directorySourceBlueprint = pkgs.writeText "swag-directory-source.yaml" (
+    concatStringsSep "\n" (
+      [
+        "version: 1"
+        "metadata:"
+        "  name: swag-directory-source"
+        "  labels:"
+        "    blueprints.goauthentik.io/instantiate: \"true\""
+        "entries:"
+        "  - model: authentik_sources_ldap.ldapsource"
+        "    identifiers:"
+        "      slug: ${q ds.slug}"
+        "    state: present"
+        "    attrs:"
+        "      name: ${q ds.name}"
+        "      enabled: true"
+        "      server_uri: ${q ds.url}"
+        "      bind_cn: ${q bindDn}"
+        "      base_dn: ${q ds.baseDn}"
+        "      additional_user_dn: ou=people"
+        "      additional_group_dn: ou=groups"
+        "      user_object_filter: \"(objectClass=person)\""
+        "      group_object_filter: \"(objectClass=groupOfUniqueNames)\""
+        "      group_membership_field: member"
+        "      object_uniqueness_field: uid"
+        "      user_matching_mode: username_link"
+        "      group_matching_mode: name_link"
+        "      sync_users: true"
+        "      sync_groups: true"
+        "      sync_users_password: ${boolToString ds.passwordWriteback}"
+        "      user_property_mappings:"
+      ]
+      ++ map (m: "        - ${findLdapMapping m}") [
+        "default-dn-path"
+        "default-name"
+        "default-mail"
+        "openldap-uid"
+        "openldap-cn"
+      ]
+      ++ [
+        "      group_property_mappings:"
+        "        - ${findLdapMapping "openldap-cn"}"
+        ""
+      ]
+    )
+  );
 
   # The local subdomain server_name for the admin UI vhost: "auth" under the
   # swag dns internal zone. null when swag dns is absent AND no explicit
@@ -200,14 +257,15 @@ let
   # Generates the shell script to provision one outpost + token via
   # `systemd-run → manage.py shell`. The oneshot runs as root; `systemd-run`
   # creates a transient unit as the authentik user with the server's
-  # serviceConfig (akOptions), passing the token key via --setenv. The Python
+  # serviceConfig (akOptions). Secrets reach the transient unit as a systemd
+  # credential (LoadCredential=secret:<path>), never as an argument or env
+  # var, so no other user can read them from /proc or `systemctl show`. The Python
   # code creates/updates the Outpost model and sets its token's key to the
   # pre-defined value. Idempotent: get_or_create + token.key = ... save.
   mkOutpostSetup = name: outpostName: typeEnum: tokenPath: hostEnv: hostBrowserEnv: ''
-    TOKEN=$(cat ${tokenPath})
     ${config.systemd.package}/bin/systemd-run --wait --pipe --collect \
       ${concatStringsSep " \\\n      " akOptions} \
-      --setenv OUTPOST_TOKEN="$TOKEN" \
+      --property LoadCredential=secret:${tokenPath} \
       --setenv OUTPOST_NAME="${outpostName}" \
       --setenv OUTPOST_TYPE_ENUM="${typeEnum}" \
       ${hostEnv} \
@@ -217,7 +275,7 @@ let
 import os
 from dataclasses import asdict
 from authentik.outposts.models import Outpost, OutpostType
-key = os.environ["OUTPOST_TOKEN"]
+key = open(os.environ["CREDENTIALS_DIRECTORY"] + "/secret").read().rstrip("\n")
 name = os.environ["OUTPOST_NAME"]
 otype = os.environ["OUTPOST_TYPE_ENUM"]
 type_map = {"proxy": OutpostType.PROXY, "ldap": OutpostType.LDAP}
@@ -252,11 +310,10 @@ print(f"Outpost {name}: token set (created={created})")
   # column encryption), so the ORM write is authoritative. Idempotent + safe
   # to re-run on every boot.
   mkProviderSecretSetup = name: secretPath: ''
-    PROVIDER_SECRET=$(cat ${secretPath})
     ${config.systemd.package}/bin/systemd-run --wait --pipe --collect \
       ${concatStringsSep " \\\n      " akOptions} \
       --setenv PROVIDER_NAME="${name}" \
-      --setenv PROVIDER_SECRET="$PROVIDER_SECRET" \
+      --property LoadCredential=secret:${secretPath} \
       --working-directory /var/lib/authentik \
       -- ${managePy} shell -c '
 import os
@@ -264,7 +321,7 @@ import time
 from authentik.providers.oauth2.models import OAuth2Provider
 
 name = os.environ["PROVIDER_NAME"]
-secret = os.environ["PROVIDER_SECRET"]
+secret = open(os.environ["CREDENTIALS_DIRECTORY"] + "/secret").read().rstrip("\n")
 
 provider = None
 for _ in range(90):
@@ -295,11 +352,10 @@ else:
   # declared password — set_password rehashes, and a rehash invalidates
   # other sessions, which is why this writes unconditionally.
   mkUserPasswordSetup = name: secretPath: ''
-    USER_PASSWORD=$(cat ${secretPath})
     ${config.systemd.package}/bin/systemd-run --wait --pipe --collect \
       ${concatStringsSep " \\\n      " akOptions} \
       --setenv USER_NAME="${name}" \
-      --setenv USER_PASSWORD="$USER_PASSWORD" \
+      --property LoadCredential=secret:${secretPath} \
       --working-directory /var/lib/authentik \
       -- ${managePy} shell -c '
 import os
@@ -307,7 +363,7 @@ import time
 from authentik.core.models import User
 
 name = os.environ["USER_NAME"]
-secret = os.environ["USER_PASSWORD"]
+secret = open(os.environ["CREDENTIALS_DIRECTORY"] + "/secret").read().rstrip("\n")
 
 user = None
 for _ in range(90):
@@ -327,6 +383,46 @@ else:
     user.set_password(secret)
     user.save(update_fields=["password"])
     print(f"user {name}: password set")
+'
+  '';
+
+  # Stores the directory source's bind password (from a credential) once the
+  # blueprint has created the source, then queues a sync so users appear
+  # without waiting for the schedule. Idempotent.
+  mkDirectorySourceSetup = ''
+    ${config.systemd.package}/bin/systemd-run --wait --pipe --collect \
+      ${concatStringsSep " \\\n      " akOptions} \
+      --setenv SOURCE_SLUG="${ds.slug}" \
+      --property LoadCredential=secret:${ds.bindPasswordFile} \
+      --working-directory /var/lib/authentik \
+      -- ${managePy} shell -c '
+import os
+import time
+from authentik.sources.ldap.models import LDAPSource
+from authentik.sources.ldap.tasks import ldap_sync
+
+slug = os.environ["SOURCE_SLUG"]
+password = open(os.environ["CREDENTIALS_DIRECTORY"] + "/secret").read().rstrip("\n")
+
+source = None
+for _ in range(90):
+    source = LDAPSource.objects.filter(slug=slug).first()
+    if source is not None:
+        break
+    time.sleep(2)
+
+if source is None:
+    raise SystemExit(f"LDAPSource {slug!r} did not exist after 180s (blueprint not applied?)")
+
+if source.bind_password != password:
+    source.bind_password = password
+    source.save(update_fields=["bind_password"])
+    print(f"source {slug}: bind password set")
+else:
+    print(f"source {slug}: bind password already in sync")
+
+ldap_sync.send(str(source.pk))
+print(f"source {slug}: sync queued")
 '
   '';
 
@@ -417,6 +513,8 @@ else:
       ) cfg.blueprints)}
       # Auto-generated proxy-apps blueprint
       ${optionalString hasProxyApps "cp ${proxyAppsBlueprint}/proxy-apps.yaml $out/proxy-apps.yaml"}
+      # Directory LDAP source
+      ${optionalString ds.enable "cp ${directorySourceBlueprint} $out/swag-directory-source.yaml"}
     '';
 in
 {
@@ -468,7 +566,7 @@ in
         settings = mkMerge [
           cfg.settings
           { email = cfg.email; }
-          (mkIf (cfg.blueprints != { } || hasProxyApps) { blueprints_dir = "${blueprintsDir}"; })
+          (mkIf (cfg.blueprints != { } || hasProxyApps || ds.enable) { blueprints_dir = "${blueprintsDir}"; })
         ];
 
         # When there are server secrets, use the assembled env file; otherwise
@@ -755,6 +853,42 @@ in
       services.cloudflared.tunnels."${config.networking.hostName}".ingress."${cfg.dashboard.publicDomain}" =
         "http://127.0.0.1:80";
     })
+
+    # ── Directory source: bind password + first sync ────────────────────────
+    (mkIf ds.enable {
+      systemd.services.authentik-directory-source-setup = {
+        description = "Store the directory LDAP source's bind password and queue a sync";
+        after = [
+          "authentik-migrate.service"
+          "authentik-worker.service"
+          "swag-directory-provision.service"
+        ];
+        wantedBy = [ "multi-user.target" ];
+        restartTriggers = [ directorySourceBlueprint ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          TimeoutStartSec = 300;
+        };
+        script = mkDirectorySourceSetup;
+      };
+    })
+
+    # ── Directory source: wire up swag directory on the same host ──────────
+    # Connection defaults, and Authentik's bind account declared in the
+    # directory with a config-owned password.
+    (optionalAttrs directoryDeclared (mkIf (ds.enable && hasDirectory) {
+      services.swag.authentik.directorySource = {
+        url = mkDefault "ldap://127.0.0.1:${toString config.services.swag.directory.ldap.port}";
+        baseDn = mkDefault config.services.swag.directory.baseDn;
+      };
+      services.swag.directory.users.${ds.bindUser} = {
+        email = mkDefault "${ds.bindUser}@swag.invalid";
+        displayName = mkDefault "Authentik";
+        groups = [ (if ds.passwordWriteback then "lldap_password_manager" else "lldap_strict_readonly") ];
+        passwordFile = ds.bindPasswordFile;
+      };
+    }))
 
     # ── Firewall: LDAP outpost (LAN-bound by default) ──────────────────────
     (mkIf (cfg.openFirewall && cfg.outposts.ldap.enable) {

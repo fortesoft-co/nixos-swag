@@ -44,7 +44,9 @@ let
   # systemd places LoadCredential= files here (CREDENTIALS_DIRECTORY).
   lldapCreds = "/run/credentials/lldap.service";
 
-  usersWithPassword = filterAttrs (_: u: u.initialPasswordFile != null) cfg.users;
+  usersWithPassword = filterAttrs (
+    _: u: u.initialPasswordFile != null || u.passwordFile != null
+  ) cfg.users;
 
   provisionConfig = pkgs.writeText "swag-directory.json" (
     builtins.toJSON {
@@ -52,10 +54,12 @@ let
       ldapUrl = "ldap://127.0.0.1:${toString cfg.ldap.port}";
       inherit (cfg) baseDn adminUsername;
       ldappasswd = "${pkgs.openldap}/bin/ldappasswd";
+      ldapwhoami = "${pkgs.openldap}/bin/ldapwhoami";
       groups = attrNames cfg.groups;
       users = mapAttrs (_: u: {
         inherit (u) email displayName groups;
         hasInitialPassword = u.initialPasswordFile != null;
+        managedPassword = u.passwordFile != null;
       }) cfg.users;
     }
   );
@@ -75,6 +79,10 @@ in
   config = mkIf cfg.enable (mkMerge [
     {
       assertions = [
+        {
+          assertion = all (u: u.initialPasswordFile == null || u.passwordFile == null) (attrValues cfg.users);
+          message = "services.swag.directory.users: set initialPasswordFile or passwordFile on a user, not both.";
+        }
         {
           assertion = unknownGroups == [ ];
           message = "services.swag.directory.users reference undeclared groups: ${concatStringsSep ", " unknownGroups}. Declare them in services.swag.directory.groups.";
@@ -119,7 +127,10 @@ in
           LoadCredential = [
             "admin-password:${cfg.adminPasswordFile}"
           ]
-          ++ mapAttrsToList (name: u: "user-${name}:${u.initialPasswordFile}") usersWithPassword;
+          ++ mapAttrsToList (
+            name: u:
+            "user-${name}:${if u.passwordFile != null then u.passwordFile else u.initialPasswordFile}"
+          ) usersWithPassword;
           DynamicUser = true;
           PrivateTmp = true;
           ProtectSystem = "strict";
