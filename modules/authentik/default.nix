@@ -9,27 +9,17 @@
 # this module leaves off). State is relocatable to an external drive via a bind
 # mount.
 #
-# This module does NOT import the upstream module — it only sets options on its
-# surface (convention B, same as nixos-hermes/service-ssh). The host imports
-# the upstream module alongside:
+# nixos-swag's flake imports the upstream module together with this one
+# (nixosModules.authentik), so services.authentik.* is always defined. To pin
+# upstream yourself, override the input:
 #
-#   # private flake.nix
-#   inputs.authentik-nix.url = "github:nix-community/authentik-nix";
-#   # inputs.authentik-nix.inputs.nixpkgs.follows = "nixpkgs";  # see upstream README
+#   inputs.nixos-swag.inputs.authentik-nix.follows = "authentik-nix";
 #
-#   # host modules.nix
-#   { authentik-nix, nixos-swag, ... }: {
-#     imports = [
-#       authentik-nix.nixosModules.default      # defines services.authentik.*
-#       nixos-swag.nixosModules.authentik
-#     ];
+#   { nixos-swag, ... }: {
+#     imports = [ nixos-swag.nixosModules.authentik ];
 #     services.swag.authentik.enable = true;
 #     services.swag.authentik.secrets.AUTHENTIK_SECRET_KEY = ./secrets/authentik-secret-key.age;
-#     services.swag.authentik.stateDir = "${config.cfg.homelab.stateDir}/authentik";
 #   }
-#
-# Without that upstream import, `services.authentik` is undefined and this
-# preset's assertions will fail.
 {
   config,
   lib,
@@ -82,12 +72,6 @@ let
   # entries via attrsOf merge.
   hasUsers = cfg.users != { };
   hasUserPasswords = any (u: u.passwordFile != null) (attrValues cfg.users);
-
-  # Upstream module present (host imported authentik-nix.nixosModules.default).
-  # Checked via `options` (declarations) not `config` so a host without the
-  # upstream gets a clean assertion instead of an eval error reading a missing
-  # option.
-  hasUpstream = options.services ? authentik;
 
   # swag web provides the nginx backbone + the services.swag.web.vhosts map
   # the admin UI registers with. swag dns provides the internal zone the
@@ -407,10 +391,6 @@ in
   config = mkIf cfg.enable (mkMerge [
     {
       assertions = [
-        {
-          assertion = hasUpstream;
-          message = "services.swag.authentik.enable requires the upstream authentik-nix module on the host: import authentik-nix.nixosModules.default alongside nixos-swag.nixosModules.authentik.";
-        }
         {
           assertion = cfg.environmentFile != null || cfg.secrets ? AUTHENTIK_SECRET_KEY;
           message = "services.swag.authentik needs AUTHENTIK_SECRET_KEY — set services.swag.authentik.secrets.AUTHENTIK_SECRET_KEY (age file with `openssl rand -base64 60`) or services.swag.authentik.environmentFile.";
