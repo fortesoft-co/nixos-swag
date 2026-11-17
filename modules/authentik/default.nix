@@ -62,7 +62,12 @@ let
   # by a blueprint or manually) and overwrites its client_secret with the
   # declared value — the outpost-token pattern for OAuth2 clients: the file
   # is the single source of truth for BOTH authentik and the consumer.
-  hasProviderSecrets = cfg.providerSecrets != { };
+  # oidcClients contribute their secrets here too, keyed by provider name
+  # (the slug).
+  effectiveProviderSecrets =
+    cfg.providerSecrets // mapAttrs (_: c: c.clientSecretFile) cfg.oidcClients;
+  hasProviderSecrets = effectiveProviderSecrets != { };
+  hasOidcClients = cfg.oidcClients != { };
   # Fleet users: the module generates a users blueprint (existence only —
   # username/email/type; passwords never live in it) and a password-sync
   # oneshot (hashes+sets when differing). Any consumer module can append
@@ -490,6 +495,85 @@ print(f"source {slug}: sync queued")
     ]
     ++ map (name: "        - !KeyOf provider-${name}") (attrNames cfg.apps)
   );
+  # Auto-generated blueprint for the OIDC client registry: a confidential
+  # OAuth2Provider (authorization code + refresh token grants) + Application
+  # per client, plus a policy binding per
+  # allowed group. Raw YAML for the !KeyOf/!Find tags. The client secret is
+  # not in it (store paths are world-readable): authentik generates one on
+  # create and authentik-provider-secret-setup replaces it from the file.
+  findScope = scope:
+    "!Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-${scope}]]";
+  oidcClientsBlueprintYaml = concatStringsSep "\n" (
+    [
+      "version: 1"
+      "metadata:"
+      "  name: swag-oidc-clients"
+      "  labels:"
+      "    blueprints.goauthentik.io/instantiate: \"true\""
+      "entries:"
+      "  - model: authentik_flows.flow"
+      "    id: auth-flow"
+      "    identifiers:"
+      "      slug: default-provider-authorization-implicit-consent"
+      "    state: present"
+      "    attrs: {}"
+      "  - model: authentik_flows.flow"
+      "    id: inv-flow"
+      "    identifiers:"
+      "      slug: default-provider-invalidation-flow"
+      "    state: present"
+      "    attrs: {}"
+    ]
+    ++ flatten (
+      mapAttrsToList (slug: c: [
+        "  - model: authentik_providers_oauth2.oauth2provider"
+        "    id: oidc-provider-${slug}"
+        "    identifiers:"
+        "      name: ${builtins.toJSON slug}"
+        "    state: present"
+        "    attrs:"
+        "      name: ${builtins.toJSON slug}"
+        "      client_type: confidential"
+        # Blueprint-made providers start with none allowed.
+        "      grant_types: [authorization_code, refresh_token]"
+        "      client_id: ${builtins.toJSON c.clientId}"
+        "      authorization_flow: !KeyOf auth-flow"
+        "      invalidation_flow: !KeyOf inv-flow"
+        "      signing_key: !Find [authentik_crypto.certificatekeypair, [name, \"authentik Self-signed Certificate\"]]"
+        "      redirect_uris:"
+      ]
+      ++ concatMap (u: [
+        "        - matching_mode: strict"
+        "          url: ${builtins.toJSON u}"
+      ]) c.redirectUris
+      ++ [ "      property_mappings:" ]
+      ++ map (scope: "        - ${findScope scope}") [ "openid" "email" "profile" ]
+      ++ [
+        "  - model: authentik_core.application"
+        "    id: oidc-app-${slug}"
+        "    identifiers:"
+        "      slug: ${builtins.toJSON slug}"
+        "    state: present"
+        "    attrs:"
+        "      name: ${builtins.toJSON c.name}"
+        "      provider: !KeyOf oidc-provider-${slug}"
+        "      policy_engine_mode: any"
+      ]
+      ++ optional (c.launchUrl != null) "      meta_launch_url: ${builtins.toJSON c.launchUrl}"
+      ++ concatLists (imap0 (i: g: [
+        "  - model: authentik_policies.policybinding"
+        "    identifiers:"
+        "      target: !KeyOf oidc-app-${slug}"
+        "      group: !Find [authentik_core.group, [name, ${builtins.toJSON g}]]"
+        "    state: present"
+        "    attrs:"
+        "      order: ${toString i}"
+      ]) c.groups)
+      ) cfg.oidcClients
+    )
+    ++ [ "" ]
+  );
+
   proxyAppsBlueprint = pkgs.runCommand "proxy-apps-blueprint" { }
     ''
       mkdir $out
@@ -513,6 +597,8 @@ print(f"source {slug}: sync queued")
       ) cfg.blueprints)}
       # Auto-generated proxy-apps blueprint
       ${optionalString hasProxyApps "cp ${proxyAppsBlueprint}/proxy-apps.yaml $out/swag-proxy-apps.yaml"}
+      # OIDC client registry
+      ${optionalString hasOidcClients "cp ${pkgs.writeText "swag-oidc-clients.yaml" oidcClientsBlueprintYaml} $out/swag-oidc-clients.yaml"}
       # Directory LDAP source
       ${optionalString ds.enable "cp ${directorySourceBlueprint} $out/swag-directory-source.yaml"}
     '';
@@ -548,11 +634,24 @@ in
           message = "services.swag.authentik.dashboard.publicDomain requires nixos-cloudflared on the host — publicDomain is specifically for cloudflared ingress. Use the local subdomain (swag dns) for LAN access.";
         }
         {
+          assertion = intersectLists (attrNames cfg.oidcClients) (attrNames cfg.apps ++ attrNames cfg.providerSecrets) == [ ];
+          message = "services.swag.authentik.oidcClients: slugs must not reuse a name from services.swag.authentik.apps or providerSecrets (provider names are unique).";
+        }
+        {
+          assertion = !hasOidcClients || cfg.url != null;
+          message = "services.swag.authentik.oidcClients needs services.swag.authentik.url (the base URL clients reach Authentik at); it defaults only when the admin UI has a local domain.";
+        }
+        {
           assertion = !(cfg.bootstrap.passwordFile != null && cfg.bootstrap.passwordHashFile != null);
           message = "services.swag.authentik.bootstrap: set passwordFile OR passwordHashFile, not both (authentik errors if AUTHENTIK_BOOTSTRAP_PASSWORD and AUTHENTIK_BOOTSTRAP_PASSWORD_HASH are both set).";
         }
       ];
     }
+
+    # ── Base URL for OIDC clients ───────────────────────────────────────────
+    (mkIf (effectiveDomain != null) {
+      services.swag.authentik.url = mkDefault "https://${effectiveDomain}";
+    })
 
     # ── Upstream surface ────────────────────────────────────────────────────
     {
@@ -566,7 +665,7 @@ in
         settings = mkMerge [
           cfg.settings
           { email = cfg.email; }
-          (mkIf (cfg.blueprints != { } || hasProxyApps || ds.enable) { blueprints_dir = "${blueprintsDir}"; })
+          (mkIf (cfg.blueprints != { } || hasProxyApps || hasOidcClients || ds.enable) { blueprints_dir = "${blueprintsDir}"; })
         ];
 
         # When there are server secrets, use the assembled env file; otherwise
@@ -642,7 +741,7 @@ in
           # The option value is the runtime path of the raw secret; a path to
           # ciphertext would make systemd-run reject the multi-line env
           # assignment ("Cannot assign environment variable PROVIDER_SECRET=...").
-          mapAttrsToList mkProviderSecretSetup cfg.providerSecrets
+          mapAttrsToList mkProviderSecretSetup effectiveProviderSecrets
         );
       };
     })

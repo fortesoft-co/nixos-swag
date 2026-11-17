@@ -417,6 +417,79 @@ in
       '';
     };
 
+    # ── OIDC client registry → auto-generated blueprint ─────────────────────
+    url = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "https://auth.lan.example.com";
+      description = ''
+        Base URL browsers and OIDC clients reach Authentik at, without a
+        trailing slash. Issuer and discovery URLs of oidcClients are built
+        from it: <url>/application/o/<slug>/. Defaults to
+        https://<dashboard.domain> when the admin UI has a local domain.
+      '';
+    };
+
+    oidcClients = mkOption {
+      type = types.attrsOf (
+        types.submodule (
+          { name, ... }:
+          {
+            options = {
+              name = mkOption {
+                type = types.str;
+                default = name;
+                description = "Display name of the application in Authentik's launcher.";
+              };
+              clientId = mkOption {
+                type = types.str;
+                default = name;
+                description = "OAuth2 client ID the app presents.";
+              };
+              clientSecretFile = mkOption {
+                type = secretPath;
+                description = ''
+                  Runtime path to a file holding the client secret, readable
+                  by root. authentik-provider-secret-setup sets it on the
+                  provider, getting it as a systemd credential; the app
+                  reads the same file.
+                '';
+              };
+              redirectUris = mkOption {
+                type = types.nonEmptyListOf types.str;
+                description = "Allowed redirect URIs, matched exactly.";
+              };
+              launchUrl = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "URL the app launcher opens.";
+              };
+              groups = mkOption {
+                type = types.listOf types.str;
+                default = [ ];
+                example = [ "git-users" ];
+                description = ''
+                  Groups allowed to use the application; members of any of
+                  them pass. Empty = every user. The groups must exist in
+                  Authentik (e.g. synced from the directory) when the
+                  blueprint applies.
+                '';
+              };
+            };
+          }
+        )
+      );
+      default = { };
+      description = ''
+        OIDC applications, keyed by slug. Each gets a confidential OAuth2
+        provider (scopes openid, email, profile; signed with Authentik's
+        self-signed key) and an Application, through a generated blueprint,
+        and its client secret is kept equal to clientSecretFile. The issuer
+        is <url>/application/o/<slug>/, and the app reads clientSecretFile
+        too; for an app on another host, hand it the same secret there.
+      '';
+    };
+
     # ── Provider client secrets (the outpost-token pattern for OAuth2) ───────
     providerSecrets = mkOption {
       type = types.attrsOf secretPath;

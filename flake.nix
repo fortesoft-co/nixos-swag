@@ -47,6 +47,7 @@
         {
           directory = import ./tests/directory.nix { inherit pkgs self; };
           authentik-directory = import ./tests/authentik-directory.nix { inherit pkgs self; };
+          authentik-oidc = import ./tests/authentik-oidc.nix { inherit pkgs self; };
         };
     };
 }
