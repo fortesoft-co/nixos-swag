@@ -74,6 +74,10 @@ let
   # the admin UI registers with. swag dns provides the internal zone the
   # admin subdomain is derived from. Both via guarded `options.services ? swag.<module>`
   # checks so a host without them doesn't force the cfg namespace.
+  # Integration blocks are wrapped in optionalAttrs on the option's existence
+  # (options never depend on config, so no recursion): a false mkIf still
+  # counts as a definition, which fails when the other module isn't imported.
+  webDeclared = options.services ? swag.web;
   hasLocalweb = options.services ? swag.web && config.services.swag.web.enable;
   hasLocaldns = options.services ? swag.dns && config.services.swag.dns.enable;
   hasCloudflared = options.services ? cloudflared && config.services.cloudflared.enable;
@@ -737,14 +741,14 @@ in
     })
 
     # ── Admin UI: local subdomain vhost via swag web ───────────────
-    (mkIf (hasLocalweb && effectiveDomain != null) {
+    (optionalAttrs webDeclared (mkIf (hasLocalweb && effectiveDomain != null) {
       services.swag.web.vhosts.${effectiveDomain} = adminVhost;
-    })
+    }))
 
     # ── Admin UI: public-domain vhost (same backend, for cloudflared) ──────
-    (mkIf (hasLocalweb && cfg.dashboard.publicDomain != null) {
+    (optionalAttrs webDeclared (mkIf (hasLocalweb && cfg.dashboard.publicDomain != null) {
       services.swag.web.vhosts.${cfg.dashboard.publicDomain} = adminVhost;
-    })
+    }))
 
     # ── Cloudflared ingress to the public admin UI ──────────────────────────
     (mkIf (hasCloudflared && cfg.dashboard.publicDomain != null) {
@@ -764,11 +768,11 @@ in
     # locations (extraLocations) and the login redirect on 401
     # (extraConfig). Several modules can contribute to the same vhost — the
     # app's own module sets host+port, this one adds the gate.
-    (mkIf (cfg.apps != { } && cfg.outposts.proxy.enable && hasLocalweb) {
+    (optionalAttrs webDeclared (mkIf (cfg.apps != { } && cfg.outposts.proxy.enable && hasLocalweb) {
       services.swag.web.vhosts = genAttrs (mapAttrsToList (_: app:
         # Extract hostname from app.host URL (e.g. "http://hermes.lan.io" → "hermes.lan.io")
         builtins.head (builtins.match "https?://([^:/]+).*" app.host)
       ) cfg.apps) (_: forwardAuthVhost);
-    })
+    }))
   ]);
 }

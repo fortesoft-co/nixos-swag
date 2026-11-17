@@ -1,5 +1,8 @@
 {
-  description = "Self-hosted web gateway for NixOS: split-horizon DNS, an nginx vhost registry with ACME, and Authentik SSO, each usable on its own.";
+  description = "Self-hosted web gateway for NixOS: split-horizon DNS, an nginx vhost registry with ACME, a user directory and Authentik SSO, each usable on its own.";
+
+  # Only for checks (NixOS VM tests); the modules use the host's nixpkgs.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   # Tunnel options come with the default module; point this input at your
   # own copy with inputs.nixos-swag.inputs.nixos-cloudflared.follows.
@@ -9,11 +12,17 @@
   inputs.authentik-nix.url = "github:nix-community/authentik-nix";
 
   outputs =
-    { self, nixos-cloudflared, authentik-nix }:
+    {
+      self,
+      nixpkgs,
+      nixos-cloudflared,
+      authentik-nix,
+    }:
     {
       nixosModules = {
         dns = ./modules/dns;
         web = ./modules/web;
+        directory = ./modules/directory;
         authentik = {
           imports = [
             ./modules/authentik
@@ -24,10 +33,19 @@
           imports = [
             self.nixosModules.dns
             self.nixosModules.web
+            self.nixosModules.directory
             self.nixosModules.authentik
             nixos-cloudflared.nixosModules.default
           ];
         };
       };
+
+      checks.x86_64-linux =
+        let
+          pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        in
+        {
+          directory = import ./tests/directory.nix { inherit pkgs self; };
+        };
     };
 }
