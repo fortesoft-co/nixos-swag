@@ -10,7 +10,7 @@
 # The escape hatches (scheme, extraLocations, extraConfig) keep this module
 # context-generic: an app that needs an HTTPS upstream (authentik on :9443),
 # static assets (/static/), or websockets (/ws/) supplies those via the registry
-# entry — localweb doesn't need to know about authentik. Composes with
+# entry — web doesn't need to know about authentik. Composes with
 # swag dns (dnsmasq resolves *.<internalDomain> → this host) and cloudflared
 # (public domain ingress). A vhost with a basicAuthFile is password-gated by an
 # htpasswd file the host provides at runtime.
@@ -34,13 +34,13 @@ let
   # Root "/" location for a vhost: proxyPass to the backend, recommended proxy
   # headers, and proxy_ssl_verify off when the upstream speaks HTTPS (self-signed
   # / internal certs — e.g. authentik on :9443). The root location is owned by
-  # this module; app-specific extra locations go in `extraLocations`. When
-  # forwardAuth is set, auth_request is added to gate access via authentik.
+  # this module; app-specific extra locations go in `extraLocations`, and
+  # directives for the root location itself in `rootExtraConfig`.
   rootLocation = v:
     let
       parts =
         (optional (v.scheme == "https") "proxy_ssl_verify off;")
-        ++ (optional (v.forwardAuth != null) "auth_request /outpost.goauthentik.io/auth;")
+        ++ (optional (v.rootExtraConfig != "") v.rootExtraConfig)
         ++ (optional (v.proxyHostHeader != null) ''
           proxy_set_header Host ${v.proxyHostHeader};
           proxy_set_header Origin http://${v.proxyHostHeader};
@@ -57,37 +57,6 @@ let
       extraConfig = concatStringsSep "\n" parts;
     };
 
-  # Forward-auth locations for a vhost: the internal auth subrequest handler,
-  # the public outpost proxy (for redirects/callbacks), and the named login
-  # redirect. Added to the vhost's locations when forwardAuth is set.
-  forwardAuthLocations = v: optionalAttrs (v.forwardAuth != null) {
-    "= /outpost.goauthentik.io/auth" = {
-      recommendedProxySettings = false;
-      extraConfig = ''
-        internal;
-        proxy_pass ${v.forwardAuth.outpostUrl}/outpost.goauthentik.io/auth/nginx;
-        proxy_set_header Host $host;
-        proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
-        proxy_set_header X-Forwarded-Host $http_host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Cookie $http_cookie;
-      '';
-    };
-    "/outpost.goauthentik.io/" = {
-      recommendedProxySettings = false;
-      extraConfig = ''
-        proxy_pass ${v.forwardAuth.outpostUrl};
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Host $http_host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-      '';
-    };
-    "@authentik_login" = {
-      extraConfig = ''
-        return 302 $scheme://$http_host/outpost.goauthentik.io/start?rd=$request_uri;
-      '';
-    };
-  };
 in
 {
   imports = [ ./options.nix ];
@@ -107,12 +76,8 @@ in
       # htpasswd file, read by the nginx worker.
       # scheme/extraLocations/extraConfig are passed through verbatim — this
       # module stays generic, app-specific nginx lives in the registering module.
-      # forwardAuth, when set, adds auth_request + the authentik outpost locations.
       services.nginx.virtualHosts = mapAttrs (name: v:
         let
-          faExtra = optionalAttrs (v.forwardAuth != null) {
-            extraConfig = "error_page 401 = @authentik_login;";
-          };
           # TLS vhosts: nginx terminates :443 with the ACME cert while the
           # backend keeps receiving plain http — X-Forwarded-Proto
           # (recommendedProxySettings emits $scheme) then reads https
@@ -127,16 +92,13 @@ in
         in
         ({
           inherit listen;
-          locations = { "/" = rootLocation v; }
-            // forwardAuthLocations v
-            // v.extraLocations;
+          locations = { "/" = rootLocation v; } // v.extraLocations;
         }
         // optionalAttrs v.tls {
           useACMEHost = certName name;
           forceSSL = true;
         }
         // optionalAttrs (v.extraConfig != "") { extraConfig = v.extraConfig; }
-        // faExtra
         // optionalAttrs (v.basicAuthFile != null) {
           inherit (v) basicAuthFile;
         })

@@ -139,6 +139,42 @@ let
     };
   };
 
+  # nginx forward auth against the proxy outpost, expressed through swag
+  # web's generic vhost hooks (see the Forward-auth block below).
+  outpostUrl = "http://${cfg.outposts.proxy.listenHTTP}";
+  forwardAuthVhost = {
+    rootExtraConfig = "auth_request /outpost.goauthentik.io/auth;";
+    extraConfig = "error_page 401 = @authentik_login;";
+    extraLocations = {
+      "= /outpost.goauthentik.io/auth" = {
+        recommendedProxySettings = false;
+        extraConfig = ''
+          internal;
+          proxy_pass ${outpostUrl}/outpost.goauthentik.io/auth/nginx;
+          proxy_set_header Host $host;
+          proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
+          proxy_set_header X-Forwarded-Host $http_host;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header Cookie $http_cookie;
+        '';
+      };
+      "/outpost.goauthentik.io/" = {
+        recommendedProxySettings = false;
+        extraConfig = ''
+          proxy_pass ${outpostUrl};
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-Host $http_host;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        '';
+      };
+      "@authentik_login" = {
+        extraConfig = ''
+          return 302 $scheme://$http_host/outpost.goauthentik.io/start?rd=$request_uri;
+        '';
+      };
+    };
+  };
+
   # Properties from the authentik service's serviceConfig, passed to
   # `systemd-run` so the outpost-setup oneshot can run `manage.py shell` in
   # the same context as the authentik server (same user, env, state dir).
@@ -721,19 +757,18 @@ in
       networking.firewall.allowedTCPPorts = [ 3389 ];
     })
 
-    # ── Forward-auth: auto-wire auth_request on localweb vhosts for apps ──────
-    # For each app in services.swag.authentik.apps, extract the hostname from app.host
-    # and set forwardAuth on the matching localweb vhost. The localweb module
-    # then adds the auth_request + outpost locations to that vhost. Multiple
-    # modules can contribute to the same vhost (NixOS merges attrsets), so
-    # the hermes module sets host+port and this module sets forwardAuth.
+    # ── Forward-auth: gate app vhosts with the proxy outpost ────────────────
+    # For each app in cfg.apps, the vhost matching app.host's hostname gets
+    # nginx auth_request wiring through swag web's generic hooks: the
+    # subrequest on the root location (rootExtraConfig), the outpost
+    # locations (extraLocations) and the login redirect on 401
+    # (extraConfig). Several modules can contribute to the same vhost — the
+    # app's own module sets host+port, this one adds the gate.
     (mkIf (cfg.apps != { } && cfg.outposts.proxy.enable && hasLocalweb) {
       services.swag.web.vhosts = genAttrs (mapAttrsToList (_: app:
         # Extract hostname from app.host URL (e.g. "http://hermes.lan.io" → "hermes.lan.io")
         builtins.head (builtins.match "https?://([^:/]+).*" app.host)
-      ) cfg.apps) (_: {
-        forwardAuth.outpostUrl = "http://127.0.0.1:9005";
-      });
+      ) cfg.apps) (_: forwardAuthVhost);
     })
   ]);
 }

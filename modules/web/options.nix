@@ -103,12 +103,26 @@ in
             };
 
             extraConfig = mkOption {
-              type = types.str;
+              type = types.lines;
               default = "";
               description = ''
                 Raw nginx config appended to the vhost's server block
                 (services.nginx.virtualHosts.<name>.extraConfig). Use for ad
                 hoc server-level directives none of the typed options cover.
+                Definitions from several modules are concatenated.
+              '';
+            };
+
+            rootExtraConfig = mkOption {
+              type = types.lines;
+              default = "";
+              example = "auth_request /auth;";
+              description = ''
+                Raw nginx directives added inside the root "/" location,
+                which this module owns. Lets another module gate or adjust
+                the root proxy (e.g. an auth_request subrequest) without
+                replacing it. Definitions from several modules are
+                concatenated.
               '';
             };
 
@@ -122,29 +136,6 @@ in
                 `group = "nginx"`). Generate it with e.g.
                 `htpasswd -cB htpasswd <user>`; it must never be in the Nix
                 store.
-              '';
-            };
-
-            forwardAuth = mkOption {
-              type = types.nullOr (types.submodule {
-                options = {
-                  outpostUrl = mkOption {
-                    type = types.str;
-                    default = "http://127.0.0.1:9005";
-                    description = ''
-                      URL of the authentik proxy outpost HTTP listener.
-                      nginx sends auth_request subrequests here.
-                    '';
-                  };
-                };
-              });
-              default = null;
-              description = ''
-                Enable authentik forward auth (nginx auth_request) for this
-                vhost. When set, unauthenticated requests redirect to authentik
-                login; authenticated requests proceed to the backend. The
-                authentik module auto-sets this on vhosts matching
-                services.swag.authentik.apps hostnames.
               '';
             };
 
