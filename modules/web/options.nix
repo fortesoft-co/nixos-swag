@@ -14,8 +14,9 @@ in
       type = types.bool;
       default = true;
       description = ''
-        Open the firewall for port 80 so LAN/VPN clients reach subdomain vhosts
-        by name. Defaults to true — the module owns the shared HTTP port.
+        Open the firewall for port 80, and 443 when any vhost has tls, so
+        LAN/VPN clients reach subdomain vhosts by name. Defaults to true —
+        the module owns the shared HTTP(S) ports.
       '';
     };
 

@@ -255,6 +255,17 @@ in
             '';
           };
 
+          tls = mkOption {
+            type = types.bool;
+            default = false;
+            description = ''
+              Serve the local admin UI vhost (dashboard.domain) over TLS
+              with an ACME certificate (services.swag.web.vhosts.<domain>.tls).
+              Recommended: it carries logins and OIDC traffic. The derived
+              services.swag.authentik.url follows the vhost's scheme.
+            '';
+          };
+
           publicDomain = mkOption {
             type = types.nullOr types.str;
             default = null;
@@ -426,7 +437,8 @@ in
         Base URL browsers and OIDC clients reach Authentik at, without a
         trailing slash. Issuer and discovery URLs of oidcClients are built
         from it: <url>/application/o/<slug>/. Defaults to
-        https://<dashboard.domain> when the admin UI has a local domain.
+        http(s)://<dashboard.domain> when the admin UI has a local domain,
+        https when that vhost has TLS.
       '';
     };
 

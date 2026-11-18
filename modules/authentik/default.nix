@@ -157,6 +157,12 @@ let
     then "auth.${config.services.swag.dns.internalDomain}"
     else null;
 
+  # Whether the local admin vhost terminates TLS — read from the vhost, so a
+  # host that sets services.swag.web.vhosts.<domain>.tls directly counts too.
+  localTls =
+    hasLocalweb && effectiveDomain != null
+    && (config.services.swag.web.vhosts.${effectiveDomain}.tls or false);
+
   # Env files assembled by the authentik-secrets oneshot from the runtime
   # secret files (raw values → `KEY=value` lines). systemd loads EnvironmentFile as
   # root before ExecStart, so root-only 0600 files are fine — the DynamicUser
@@ -650,7 +656,7 @@ in
 
     # ── Base URL for OIDC clients ───────────────────────────────────────────
     (mkIf (effectiveDomain != null) {
-      services.swag.authentik.url = mkDefault "https://${effectiveDomain}";
+      services.swag.authentik.url = mkDefault "${if localTls then "https" else "http"}://${effectiveDomain}";
     })
 
     # ── Upstream surface ────────────────────────────────────────────────────
@@ -939,7 +945,7 @@ in
 
     # ── Admin UI: local subdomain vhost via swag web ───────────────
     (optionalAttrs webDeclared (mkIf (hasLocalweb && effectiveDomain != null) {
-      services.swag.web.vhosts.${effectiveDomain} = adminVhost;
+      services.swag.web.vhosts.${effectiveDomain} = adminVhost // { tls = mkDefault cfg.dashboard.tls; };
     }))
 
     # ── Admin UI: public-domain vhost (same backend, for cloudflared) ──────

@@ -41,6 +41,11 @@ let
     else
       null;
 
+  # Read from the vhost, so a host overriding its tls directly counts too.
+  dashboardTls =
+    hasWeb && dashboardDomain != null
+    && (config.services.swag.web.vhosts.${dashboardDomain}.tls or false);
+
   # systemd places LoadCredential= files here (CREDENTIALS_DIRECTORY).
   lldapCreds = "/run/credentials/lldap.service";
 
@@ -105,7 +110,7 @@ in
           jwt_secret_file = "${lldapCreds}/jwt-secret";
         }
         // optionalAttrs (dashboardDomain != null) {
-          http_url = "http://${dashboardDomain}";
+          http_url = "${if dashboardTls then "https" else "http"}://${dashboardDomain}";
         };
       };
 
@@ -154,6 +159,7 @@ in
       services.swag.web.vhosts.${dashboardDomain} = {
         host = "127.0.0.1";
         port = cfg.http.port;
+        tls = mkDefault cfg.dashboard.tls;
       };
     }))
   ]);

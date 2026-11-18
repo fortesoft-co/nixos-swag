@@ -82,6 +82,16 @@ in
       '';
     };
 
+    dashboard.tls = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Serve the admin UI vhost over TLS with an ACME certificate
+        (services.swag.web.vhosts.<domain>.tls). Recommended: the admin
+        password is entered there.
+      '';
+    };
+
     groups = mkOption {
       type = types.attrsOf (types.submodule { });
       default = { };

@@ -105,7 +105,9 @@ in
       ) cfg.vhosts;
 
       # Shared subdomain port — every vhost is reachable by name once open.
-      networking.firewall.allowedTCPPorts = optional cfg.openFirewall 80;
+      networking.firewall.allowedTCPPorts = optionals cfg.openFirewall (
+        [ 80 ] ++ optional (any (v: v.tls) (attrValues cfg.vhosts)) 443
+      );
     }
 
     # ACME DNS-01 certificates for TLS vhosts. DNS-01 only writes TXT records
