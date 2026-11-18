@@ -122,11 +122,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794977418,
-        "narHash": "sha256-+IYxvO4oEXjfrICynAOe8tqyxaC4ZyDlCe9i/kSStN8=",
+        "lastModified": 1794982481,
+        "narHash": "sha256-GfU0LY1ggiNg2L8z9aoEJmy1fApo80sSfhUjKVp+rvo=",
         "owner": "fortesoft-co",
         "repo": "nixos-cloudflared",
-        "rev": "cb5d4f8982dd7273e5fdce4f75258871a475ef71",
+        "rev": "1c038d790c92f95a0364f1c37a8c88749e9d8bbc",
         "type": "github"
       },
       "original": {
