@@ -57,6 +57,11 @@ pkgs.testers.runNixOSTest {
           groups = [ "family" ];
           initialPasswordFile = "/run/test-secrets/alice";
         };
+        # Removed from the directory during the test.
+        users.bob.email = "bob@example.com";
+        users.carol.email = "carol@example.com";
+        users.dave.email = "dave@example.com";
+        users.erin.email = "erin@example.com";
       };
 
       services.swag.authentik = {
@@ -70,12 +75,14 @@ pkgs.testers.runNixOSTest {
         directorySource = {
           enable = true;
           bindPasswordFile = "/run/test-secrets/bind";
+          removeDeletedUsers.maxPerRun = 1;
         };
       };
     };
 
   testScript = ''
     import json
+    import shlex
 
     api = "http://127.0.0.1:9000/api/v3"
     auth = "-H 'Authorization: Bearer test-api-token-0123456789'"
@@ -113,6 +120,55 @@ pkgs.testers.runNixOSTest {
         )
         machine.wait_until_succeeds(f"ldapwhoami {ldap} -D {alice_dn} -w alice-changed-in-ak", timeout=60)
         machine.fail(f"ldapwhoami {ldap} -D {alice_dn} -w alice-initial-pw")
+
+    def lldap_delete(user):
+        login = json.dumps({"username": "admin", "password": "admin-password-1"})
+        token = json.loads(machine.succeed(
+            f"curl -sf -H 'Content-Type: application/json' -d {shlex.quote(login)}"
+            " http://127.0.0.1:17170/auth/simple/login"
+        ))["token"]
+        query = json.dumps({"query": f'mutation {{ deleteUser(userId: "{user}") {{ ok }} }}'})
+        machine.succeed(
+            f"curl -sf -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json'"
+            f" -d {shlex.quote(query)} http://127.0.0.1:17170/api/graphql | jq -e '.data.deleteUser.ok'"
+        )
+
+    def journal(expect):
+        cmd = "journalctl -u authentik-directory-prune.service -o cat"
+        machine.wait_until_succeeds(f"{cmd} | grep -qF {shlex.quote(expect)}", timeout=30)
+        return machine.succeed(cmd)
+
+    def in_authentik(user):
+        return len(get(f"/core/users/?username={user}")["results"]) == 1
+
+    with subtest("a user gone from the directory is removed from Authentik, a superuser is not"):
+        for u in ["bob", "carol", "dave", "erin"]:
+            machine.wait_until_succeeds(
+                f"curl -sf {auth} '{api}/core/users/?username={u}' | jq -e '.results | length == 1'",
+                timeout=300,
+            )
+        admins = get("/core/groups/?name=authentik%20Admins")["results"][0]["pk"]
+        erin = get("/core/users/?username=erin")["results"][0]["pk"]
+        machine.succeed(
+            f"curl -sf {auth} -X POST -H 'Content-Type: application/json'"
+            f" -d '{{\"pk\": {erin}}}' '{api}/core/groups/{admins}/add_user/'"
+        )
+        lldap_delete("bob")
+        lldap_delete("erin")
+        machine.succeed("systemctl start authentik-directory-prune.service")
+        out = journal("user bob: gone from the directory; removed")
+        assert "user erin: gone from the directory but a superuser" in out, out
+        assert not in_authentik("bob"), out
+        assert in_authentik("erin"), out
+        for u in ["alice", "carol", "dave", "akadmin"]:
+            assert in_authentik(u), f"{u} removed: {out}"
+
+    with subtest("more removals than maxPerRun: none applied, the unit fails"):
+        lldap_delete("carol")
+        lldap_delete("dave")
+        machine.fail("systemctl start authentik-directory-prune.service")
+        out = journal("more than the limit of 1 per run; removing none")
+        assert in_authentik("carol") and in_authentik("dave"), out
 
     with subtest("no secret appears on a command line"):
         machine.fail(

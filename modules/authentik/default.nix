@@ -735,6 +735,21 @@ print(f"source {slug}: sync queued")
 '
   '';
 
+  # Removes Authentik users whose directory account is gone, with the guards
+  # in directory-prune.py. Same transient-unit pattern; nothing secret. The
+  # output goes through cat so the journal files it under this unit (written
+  # straight from the transient unit, it would land under run-u*.service).
+  mkDirectoryPrune = ''
+    set -o pipefail
+    ${config.systemd.package}/bin/systemd-run --wait --pipe --collect \
+      ${concatStringsSep " \\\n      " akOptions} \
+      --setenv SOURCE_SLUG="${ds.slug}" \
+      --setenv MAX_PER_RUN="${toString ds.removeDeletedUsers.maxPerRun}" \
+      --working-directory /var/lib/authentik \
+      -- ${managePy} shell -c 'exec(open("${./directory-prune.py}").read())' \
+      2>&1 | ${pkgs.coreutils}/bin/cat
+  '';
+
   # Non-secret env = caller env + the bootstrap email (AUTHENTIK_BOOTSTRAP_EMAIL),
   # applied to all three authentik units via systemd Environment.
   effectiveEnvironment = cfg.environment
@@ -1300,6 +1315,27 @@ in
           TimeoutStartSec = 300;
         };
         script = mkDirectorySourceSetup;
+      };
+    })
+
+    # ── Directory source: remove users whose directory account is gone ──────
+    (mkIf (ds.enable && ds.removeDeletedUsers.enable) {
+      systemd.services.authentik-directory-prune = {
+        description = "Remove Authentik users whose directory account is gone";
+        after = [ "authentik-directory-source-setup.service" ];
+        requires = [ "authentik.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          TimeoutStartSec = 300;
+        };
+        script = mkDirectoryPrune;
+      };
+      systemd.timers.authentik-directory-prune = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "15min";
+          OnUnitInactiveSec = ds.removeDeletedUsers.interval;
+        };
       };
     })
 

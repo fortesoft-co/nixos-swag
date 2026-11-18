@@ -39,7 +39,9 @@ affiliated with linuxserver.io.)
   login they belong to the user, and config never resets them.
 - **Single sign-on.** [Authentik](https://goauthentik.io) syncs users and
   groups from the directory and writes password changes back to it. Users change
-  their password once and it holds everywhere.
+  their password once and it holds everywhere. Remove someone from the
+  directory and they're removed from Authentik too, a few at a time at most,
+  so a broken directory can't empty it.
 - **OIDC clients from config.** Declare a client (redirect URIs, allowed groups)
   and get the provider, the application and its secret, with no admin UI step.
   Apps without their own login can sit behind Authentik's forward auth instead.
@@ -260,6 +262,16 @@ services.swag.directory.users.alice.groups = [ "members" ];  # existing users
 - **Open sign-up** (`signup = true`) adds a *Sign up* link to the login page.
   Those accounts get no groups. Approve someone by adding them to `members`
   in lldap's admin UI; reject them by deleting the account there.
+- **Removing someone.** Delete them in lldap's admin UI. Within
+  `directorySource.removeDeletedUsers.interval` (10 minutes) they're removed
+  from Authentik as well: sessions, MFA devices, consents. A run that would
+  remove more than `maxPerRun` (5) users removes none and fails
+  `authentik-directory-prune.service`; superusers are never removed. Apps
+  that keep their own copy of the account keep it, with its data, until you
+  delete it there, but no longer let them sign in.
+- **Locking someone out, keeping the account.** Deactivate them in
+  Authentik. Don't delete them only in Authentik: the directory still has
+  them, so the next sync brings them back, without their MFA devices.
 - **Safe by construction.** The directory creates accounts through a local
   socket that only the Authentik server can open. It holds the lldap admin
   password as a systemd credential, refuses any group not in
@@ -336,7 +348,7 @@ nix flake check
 | Check | What it proves |
 |---|---|
 | `directory` | Users, groups and initial passwords are provisioned; secrets are readable only by the unit that needs them; a password the user changed survives re-provisioning; provisioning is idempotent |
-| `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; no secret on a command line |
+| `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; a user deleted in lldap is removed from Authentik, a superuser is not; more removals than the limit apply none; no secret on a command line |
 | `authentik-oidc` | OIDC clients get the declared IDs, redirect URIs, grants, group bindings and secrets; discovery is served; no secret in the store or the process table |
 | `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; the enrollment socket is closed to other users; no password on a command line or in the journal |
 | `authentik-public` | The public name resolves locally; the admin interface is refused through the tunnel only; the local name redirects; logins without a second factor are sent to enrollment |

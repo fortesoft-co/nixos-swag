@@ -684,6 +684,38 @@ in
           the directory stays the source of truth for passwords too.
         '';
       };
+      removeDeletedUsers = {
+        enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = ''
+            Remove an Authentik user once their directory account is gone, so
+            the directory decides who exists: removing someone there removes
+            them here too (sessions, MFA devices, consents). Checked every
+            interval by authentik-directory-prune.service. Only users that came
+            from this source are considered, and superusers are never removed.
+            To lock someone out but keep their account, deactivate them in
+            Authentik instead; deleting a user only in Authentik doesn't
+            remove them, the next sync brings them back.
+          '';
+        };
+        maxPerRun = mkOption {
+          type = types.ints.positive;
+          default = 5;
+          description = ''
+            Most users one run may remove. A run that would remove more removes
+            none and fails the unit instead: a directory answering with far
+            fewer users than before is more likely misconfigured or damaged
+            than emptied on purpose. The search failing, or finding no users
+            at all, is refused the same way.
+          '';
+        };
+        interval = mkOption {
+          type = types.str;
+          default = "10min";
+          description = "How often to check, as a systemd time span.";
+        };
+      };
     };
 
     # ── Fleet users: declarative authentik users ────────────────────────────
