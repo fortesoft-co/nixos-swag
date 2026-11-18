@@ -42,8 +42,13 @@ in
           # avoids a loop when useAsHostResolver repoints the host to 127.0.0.1.
           no-resolv = true;
 
-          # Keep the internal zone local (never forwarded upstream).
-          local = [ "/${cfg.internalDomain}/" ];
+          # Every name answered here is local: queries for it are never
+          # forwarded, so record types not set here (AAAA, HTTPS, MX, …) get
+          # an empty answer instead of the public zone's. A public name kept
+          # on the LAN would otherwise mix its local A record with the
+          # public AAAA and HTTPS records (a CDN's IPv6 addresses, ECH and
+          # HTTP/3 hints) and send browsers elsewhere.
+          local = map (name: "/${name}/") ([ cfg.internalDomain ] ++ attrNames cfg.extraRecords);
 
           # Wildcard: *.internalDomain AND internalDomain → address.
           address =

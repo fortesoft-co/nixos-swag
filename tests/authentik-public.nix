@@ -127,6 +127,12 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the public name resolves locally"):
         assert machine.succeed("dig +short @127.0.0.1 auth.example.com").strip() == "127.0.0.1"
+        # The public zone's other records (a CDN's AAAA, its HTTPS record
+        # with ECH and HTTP/3 hints) must not mix with the local A record:
+        # answered here, empty, never forwarded.
+        for rtype in ["AAAA", "HTTPS", "MX"]:
+            out = machine.succeed(f"dig +tries=1 +time=2 @127.0.0.1 auth.example.com {rtype}")
+            assert "status: NOERROR" in out and "ANSWER: 0" in out, out
 
     with subtest("login is served on the public name, the admin interface only off the tunnel"):
         flow = "https://auth.example.com/if/flow/default-authentication-flow/"

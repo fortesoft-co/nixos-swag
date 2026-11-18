@@ -80,7 +80,10 @@ with lib;
         Extra A records, mapping a fully-qualified name → IPv4. Use full names
         (including the internal zone) — they are emitted as dnsmasq
         `address=/name/ip` entries. Useful for naming other hosts on the LAN
-        that don't run a DNS server themselves.
+        that don't run a DNS server themselves, or for keeping a public name
+        on the LAN. Like the internal zone, each name (and its subdomains) is
+        answered only here: its other record types (AAAA, HTTPS, …) come back
+        empty rather than from public DNS.
       '';
     };
 
