@@ -269,14 +269,25 @@ in
           publicDomain = mkOption {
             type = types.nullOr types.str;
             default = null;
+            example = "auth.example.com";
             description = ''
-              Public domain for the authentik admin UI via cloudflared (e.g.
-              auth.example.com). When set, registers a SECOND localweb vhost
-              keyed by this domain (same backend) and points the cloudflared
-              ingress at nginx (port 80). Requires nixos-cloudflared on the
-              host. The admin UI is gated by authentik's own login — no nginx
-              basicAuth is added (unlike a raw web app, authentik authenticates
-              itself).
+              Public name for Authentik's login, the same inside and out
+              (split horizon), e.g. auth.example.com:
+
+              - a TLS vhost for it on swag web (ACME, DNS-01);
+              - with swag dns on this host, a local record pointing it here,
+                so LAN clients never leave the LAN;
+              - a cloudflared ingress reaching that vhost over HTTPS;
+              - the local dashboard.domain redirects to it, so passkeys,
+                which are bound to one hostname, work everywhere;
+              - services.swag.authentik.url defaults to https://<it>.
+
+              Requests that arrive through the tunnel (they carry
+              Cloudflare's CF-Connecting-IP header, which clients cannot
+              set) can't load the admin interface (/if/admin/); login, user
+              settings and app sign-ins work from anywhere. nginx takes the
+              client address from that header for Authentik's logs and
+              reputation checks. Pair it with services.swag.authentik.mfa.
             '';
           };
         };
@@ -290,6 +301,34 @@ in
         access is via dashboard.publicDomain (cloudflared) — authentik's own
         login gates the admin UI.
       '';
+    };
+
+    # ── MFA on the default login flow ───────────────────────────────────────
+    mfa = {
+      enforce = mkEnableOption ''
+        requiring a second factor on every login through the default
+        authentication flow. Users without one are asked to enroll one of
+        `methods` on their next login. API tokens are unaffected'';
+
+      methods = mkOption {
+        type = types.nonEmptyListOf (types.enum [ "webauthn" "totp" ]);
+        default = [ "webauthn" "totp" ];
+        description = ''
+          Factors offered at enrollment and accepted at login: webauthn
+          (passkeys, security keys, platform authenticators) and totp
+          (authenticator apps).
+        '';
+      };
+
+      recoveryCodes = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Accept static recovery codes as the second factor. Users create
+          them in their settings (MFA devices) once they have a primary
+          factor; they are not offered as the only factor at enrollment.
+        '';
+      };
     };
 
     # ── Forward-auth app registry → auto-generated proxy blueprint ──────────

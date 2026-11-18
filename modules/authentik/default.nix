@@ -85,6 +85,7 @@ let
   webDeclared = options.services ? swag.web;
   hasLocalweb = options.services ? swag.web && config.services.swag.web.enable;
   hasLocaldns = options.services ? swag.dns && config.services.swag.dns.enable;
+  dnsDeclared = options.services ? swag.dns;
   hasCloudflared = options.services ? cloudflared && config.services.cloudflared.enable;
   directoryDeclared = options.services ? swag.directory;
   hasDirectory = directoryDeclared && config.services.swag.directory.enable;
@@ -210,6 +211,71 @@ let
       };
     };
   };
+
+  # The public login vhost: the admin vhost over TLS, the admin interface
+  # refused to tunnel requests (cloudflared sets CF-Connecting-IP and
+  # Cloudflare overwrites any client-supplied one; LAN requests never carry
+  # it), and the client address taken from that header.
+  publicDomain = cfg.dashboard.publicDomain;
+  publicVhost = adminVhost // {
+    tls = true;
+    extraConfig = ''
+      set_real_ip_from 127.0.0.1;
+      set_real_ip_from ::1;
+      real_ip_header CF-Connecting-IP;
+    '';
+    extraLocations = adminVhost.extraLocations // {
+      "/if/admin/" = {
+        proxyPass = "http://127.0.0.1:9000";
+        recommendedProxySettings = true;
+        extraConfig = ''
+          if ($http_cf_connecting_ip) {
+            return 403;
+          }
+        '';
+      };
+    };
+  };
+
+  # MFA: tighten the default flow's validation stage (created by the
+  # default blueprints, applied first through metaapplyblueprint).
+  mfa = cfg.mfa;
+  mfaSetupStage = {
+    webauthn = [ "authentik_stages_authenticator_webauthn.authenticatorwebauthnstage" "default-authenticator-webauthn-setup" "Default - WebAuthn MFA setup flow" ];
+    totp = [ "authentik_stages_authenticator_totp.authenticatortotpstage" "default-authenticator-totp-setup" "Default - TOTP MFA setup flow" ];
+  };
+  metaApply = name: [
+    "  - model: authentik_blueprints.metaapplyblueprint"
+    "    attrs:"
+    "      identifiers:"
+    "        name: ${builtins.toJSON name}"
+    "      required: true"
+  ];
+  mfaBlueprintYaml = concatStringsSep "\n" (
+    [
+      "version: 1"
+      "metadata:"
+      "  name: swag-mfa"
+      "  labels:"
+      "    blueprints.goauthentik.io/instantiate: \"true\""
+      "entries:"
+    ]
+    ++ metaApply "Default - Authentication flow"
+    ++ concatMap (m: metaApply (elemAt mfaSetupStage.${m} 2)) mfa.methods
+    ++ optionals mfa.recoveryCodes (metaApply "Default - Static MFA setup flow")
+    ++ [
+      "  - model: authentik_stages_authenticator_validate.authenticatorvalidatestage"
+      "    identifiers:"
+      "      name: default-authentication-mfa-validation"
+      "    state: present"
+      "    attrs:"
+      "      not_configured_action: configure"
+      "      device_classes: [${concatStringsSep ", " (mfa.methods ++ optional mfa.recoveryCodes "static")}]"
+      "      configuration_stages:"
+    ]
+    ++ map (m: "        - !Find [${elemAt mfaSetupStage.${m} 0}, [name, ${elemAt mfaSetupStage.${m} 1}]]") mfa.methods
+    ++ [ "" ]
+  );
 
   # nginx forward auth against the proxy outpost, expressed through swag
   # web's generic vhost hooks (see the Forward-auth block below).
@@ -603,6 +669,8 @@ print(f"source {slug}: sync queued")
       ) cfg.blueprints)}
       # Auto-generated proxy-apps blueprint
       ${optionalString hasProxyApps "cp ${proxyAppsBlueprint}/proxy-apps.yaml $out/swag-proxy-apps.yaml"}
+      # MFA on the default login flow
+      ${optionalString mfa.enforce "cp ${pkgs.writeText "swag-mfa.yaml" mfaBlueprintYaml} $out/swag-mfa.yaml"}
       # OIDC client registry
       ${optionalString hasOidcClients "cp ${pkgs.writeText "swag-oidc-clients.yaml" oidcClientsBlueprintYaml} $out/swag-oidc-clients.yaml"}
       # Directory LDAP source
@@ -614,6 +682,9 @@ in
 
   config = mkIf cfg.enable (mkMerge [
     {
+      warnings = optional (publicDomain != null && !hasCloudflared)
+        "services.swag.authentik.dashboard.publicDomain is set without cloudflared on this host: no tunnel ingress is created, so expose ${publicDomain} yourself (and requests can't be told apart from LAN ones, so the admin interface stays reachable).";
+
       assertions = [
         {
           assertion = cfg.environmentFile != null || cfg.secrets ? AUTHENTIK_SECRET_KEY;
@@ -636,10 +707,6 @@ in
           message = "services.swag.authentik.dashboard.publicDomain requires swag web (services.swag.web) on the host — the admin UI is fronted by nginx, not exposed directly.";
         }
         {
-          assertion = cfg.dashboard.publicDomain == null || hasCloudflared;
-          message = "services.swag.authentik.dashboard.publicDomain requires nixos-cloudflared on the host — publicDomain is specifically for cloudflared ingress. Use the local subdomain (swag dns) for LAN access.";
-        }
-        {
           assertion = intersectLists (attrNames cfg.oidcClients) (attrNames cfg.apps ++ attrNames cfg.providerSecrets) == [ ];
           message = "services.swag.authentik.oidcClients: slugs must not reuse a name from services.swag.authentik.apps or providerSecrets (provider names are unique).";
         }
@@ -655,8 +722,13 @@ in
     }
 
     # ── Base URL for OIDC clients ───────────────────────────────────────────
-    (mkIf (effectiveDomain != null) {
-      services.swag.authentik.url = mkDefault "${if localTls then "https" else "http"}://${effectiveDomain}";
+    (mkIf (publicDomain != null || effectiveDomain != null) {
+      services.swag.authentik.url = mkDefault (
+        if publicDomain != null then
+          "https://${publicDomain}"
+        else
+          "${if localTls then "https" else "http"}://${effectiveDomain}"
+      );
     })
 
     # ── Upstream surface ────────────────────────────────────────────────────
@@ -671,7 +743,7 @@ in
         settings = mkMerge [
           cfg.settings
           { email = cfg.email; }
-          (mkIf (cfg.blueprints != { } || hasProxyApps || hasOidcClients || ds.enable) { blueprints_dir = "${blueprintsDir}"; })
+          (mkIf (cfg.blueprints != { } || hasProxyApps || hasOidcClients || mfa.enforce || ds.enable) { blueprints_dir = "${blueprintsDir}"; })
         ];
 
         # When there are server secrets, use the assembled env file; otherwise
@@ -945,18 +1017,32 @@ in
 
     # ── Admin UI: local subdomain vhost via swag web ───────────────
     (optionalAttrs webDeclared (mkIf (hasLocalweb && effectiveDomain != null) {
-      services.swag.web.vhosts.${effectiveDomain} = adminVhost // { tls = mkDefault cfg.dashboard.tls; };
+      services.swag.web.vhosts.${effectiveDomain} =
+        if publicDomain != null && publicDomain != effectiveDomain then
+          {
+            # One login hostname: passkeys are bound to the name they were
+            # registered on.
+            host = "127.0.0.1";
+            port = 9000;
+            tls = mkDefault cfg.dashboard.tls;
+            rootExtraConfig = "return 301 https://${publicDomain}$request_uri;";
+          }
+        else
+          adminVhost // { tls = mkDefault cfg.dashboard.tls; };
     }))
 
-    # ── Admin UI: public-domain vhost (same backend, for cloudflared) ──────
-    (optionalAttrs webDeclared (mkIf (hasLocalweb && cfg.dashboard.publicDomain != null) {
-      services.swag.web.vhosts.${cfg.dashboard.publicDomain} = adminVhost;
+    # ── Public login: TLS vhost, local record, tunnel ingress ───────────────
+    (optionalAttrs webDeclared (mkIf (hasLocalweb && publicDomain != null) {
+      services.swag.web.vhosts.${publicDomain} = publicVhost;
     }))
-
-    # ── Cloudflared ingress to the public admin UI ──────────────────────────
-    (mkIf (hasCloudflared && cfg.dashboard.publicDomain != null) {
-      services.cloudflared.tunnels."${config.networking.hostName}".ingress."${cfg.dashboard.publicDomain}" =
-        "http://127.0.0.1:80";
+    (optionalAttrs dnsDeclared (mkIf (hasLocaldns && publicDomain != null) {
+      services.swag.dns.extraRecords.${publicDomain} = mkDefault config.services.swag.dns.address;
+    }))
+    (mkIf (hasCloudflared && publicDomain != null) {
+      services.cloudflared.tunnels."${config.networking.hostName}".ingress.${publicDomain} = {
+        service = "https://127.0.0.1:443";
+        originRequest.originServerName = publicDomain;
+      };
     })
 
     # ── Directory source: bind password + first sync ────────────────────────
