@@ -43,6 +43,12 @@ affiliated with linuxserver.io.)
 - **OIDC clients from config.** Declare a client (redirect URIs, allowed groups)
   and get the provider, the application and its secret, with no admin UI step.
   Apps without their own login can sit behind Authentik's forward auth instead.
+- **New people by invitation, straight into the directory.** Create an
+  invitation in Authentik's admin UI and send the link. The person picks a
+  username and password, and the account is created in lldap, not in
+  Authentik, with the groups the invitation names. No email server needed,
+  and no shell on the server. Open sign-up is one option away; those
+  accounts wait until you approve them in the directory.
 - **MFA, enforced.** One option makes every login require a second factor:
   passkeys and security keys, authenticator apps, and recovery codes. Users
   without one are walked through enrollment at their next login.
@@ -89,8 +95,8 @@ or a file you put there yourself.
 |---|---|---|---|
 | `dns` | `services.swag.dns` | dnsmasq for the internal zone, extra local records, upstream forwarding | Other modules derive their default names from the zone (`auth.lan.example.com`, `ldap.lan.example.com`) |
 | `web` | `services.swag.web` | nginx vhost registry, ACME DNS-01 certificates, firewall | Admin UIs and forward-auth gates register themselves here |
-| `directory` | `services.swag.directory` | lldap with declarative users and groups | Admin UI on `ldap.<zone>`; Authentik's bind account is created for you |
-| `authentik` | `services.swag.authentik` | Authentik server, worker and outposts; OIDC clients, forward-auth apps, MFA, public login | Syncs from the directory, registers its vhosts, adds tunnel ingress |
+| `directory` | `services.swag.directory` | lldap with declarative users and groups, and an enrollment endpoint for new accounts | Admin UI on `ldap.<zone>`; Authentik's bind account is created for you |
+| `authentik` | `services.swag.authentik` | Authentik server, worker and outposts; OIDC clients, forward-auth apps, MFA, invitations, public login | Syncs from the directory, registers its vhosts, adds tunnel ingress |
 | `default` | all of the above | plus [nixos-cloudflared](https://github.com/fortesoft-co/nixos-cloudflared) for the tunnel (off until you enable it) | |
 
 ## Quick start
@@ -231,6 +237,35 @@ services.swag.authentik = {
 };
 ```
 
+## Inviting people
+
+```nix
+services.swag.authentik.enrollment = {
+  enable = true;
+  grantableGroups = [ "git-users" ];  # what an invitation may hand out
+};
+services.swag.directory.users.alice.groups = [ "members" ];  # existing users
+```
+
+- **Invitations.** In the admin UI, go to *Directory → Invitations*, pick the
+  `swag-enrollment` flow, and optionally set fixed data
+  `{"groups": ["git-users"]}`. Send the link. Following it, the person fills
+  in username, name, email and password. The form checks the username and
+  email are free before anything is written. The account lands in the
+  directory in `members` plus the invitation's groups, and syncs into
+  Authentik within seconds.
+- **Who can log in.** Only members of `accessGroup` (default `members`).
+  Everyone else is told their account is waiting for approval; superusers
+  are exempt. Put your existing users in it before turning this on.
+- **Open sign-up** (`signup = true`) adds a *Sign up* link to the login page.
+  Those accounts get no groups. Approve someone by adding them to `members`
+  in lldap's admin UI; reject them by deleting the account there.
+- **Safe by construction.** The directory creates accounts through a local
+  socket that only the Authentik server can open. It holds the lldap admin
+  password as a systemd credential, refuses any group not in
+  `grantableGroups` (and lldap's admin groups always), and never logs or
+  stores the password it sets.
+
 ## Going public
 
 A public login takes two things: Cloudflare credentials for the tunnel, and a
@@ -303,6 +338,7 @@ nix flake check
 | `directory` | Users, groups and initial passwords are provisioned; secrets are readable only by the unit that needs them; a password the user changed survives re-provisioning; provisioning is idempotent |
 | `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; no secret on a command line |
 | `authentik-oidc` | OIDC clients get the declared IDs, redirect URIs, grants, group bindings and secrets; discovery is served; no secret in the store or the process table |
+| `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; the enrollment socket is closed to other users; no password on a command line or in the journal |
 | `authentik-public` | The public name resolves locally; the admin interface is refused through the tunnel only; the local name redirects; logins without a second factor are sent to enrollment |
 
 Each check boots a NixOS VM, so you need KVM.

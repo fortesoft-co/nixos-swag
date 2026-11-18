@@ -331,6 +331,72 @@ in
       };
     };
 
+    # ── Enrollment: invitations (and optionally open sign-up) ───────────────
+    enrollment = {
+      enable = mkEnableOption ''
+        new accounts through Authentik, created in the directory
+        (services.swag.directory with enrollment on the same host, and
+        directorySource). An admin creates an invitation in the admin UI
+        (Directory → Invitations, flow `slug`) and sends its link; following
+        it, the person picks a username and password and lands in
+        accessGroup plus any groups the invitation lists in its fixed data
+        as `groups` (each must be in grantableGroups).
+
+        Turning this on gates every login on accessGroup: existing users must
+        be members of it (declare it in services.swag.directory.users), or
+        they're told their account awaits approval. Superusers (akadmin) are
+        exempt'';
+
+      slug = mkOption {
+        type = types.str;
+        default = "swag-enrollment";
+        description = "Slug of the enrollment flow, the one invitations point at.";
+      };
+
+      title = mkOption {
+        type = types.str;
+        default = "Create your account";
+        description = "Heading of the enrollment flow.";
+      };
+
+      signup = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Also let people sign up without an invitation, through a "Sign up"
+          link on the login page. Their accounts are created in the directory
+          with no groups, and can't log in until an admin adds them to
+          accessGroup (in the directory's admin UI).
+        '';
+      };
+
+      accessGroup = mkOption {
+        type = types.str;
+        default = "members";
+        description = ''
+          Directory group whose members may log in. Declared in the
+          directory by this module; invited accounts join it.
+        '';
+      };
+
+      grantableGroups = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "git-users" ];
+        description = ''
+          Further groups an invitation may give (fixed data
+          `{"groups": ["git-users"]}`). Must be declared in
+          services.swag.directory.groups.
+        '';
+      };
+
+      pendingMessage = mkOption {
+        type = types.str;
+        default = "Your account is waiting for approval.";
+        description = "Shown when someone outside accessGroup logs in.";
+      };
+    };
+
     # ── Forward-auth app registry → auto-generated proxy blueprint ──────────
     apps = mkOption {
       type = types.attrsOf (types.submodule {

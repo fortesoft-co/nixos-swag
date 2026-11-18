@@ -50,6 +50,7 @@
           authentik-directory = import ./tests/authentik-directory.nix { inherit pkgs self; };
           authentik-oidc = import ./tests/authentik-oidc.nix { inherit pkgs self; };
           authentik-public = import ./tests/authentik-public.nix { inherit pkgs self; };
+          authentik-enrollment = import ./tests/authentik-enrollment.nix { inherit pkgs self; };
         };
     };
 }

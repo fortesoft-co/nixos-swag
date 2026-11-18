@@ -277,6 +277,238 @@ let
     ++ [ "" ]
   );
 
+  # Enrollment: a flow whose accounts are created in the directory, not in
+  # Authentik. Two expression policies talk to the directory's enrollment
+  # socket (one JSON line each way): `check` validates the form as it's
+  # submitted, so a taken username is fixable before anything is written;
+  # `create` runs once the whole plan is known (invitation and its groups
+  # included), then queues a directory sync so the account reaches Authentik
+  # within seconds. The flow has no user_write stage: Authentik learns about
+  # the account from the directory, like every other one.
+  en = cfg.enrollment;
+  dirEn = config.services.swag.directory.enrollment;
+  indentLines = n: s: concatMapStringsSep "\n" (l: if l == "" then "" else "${fixedWidthString n " " ""}${l}") (splitString "\n" s);
+  # Python shared by the two policies: ask the directory, get its answer.
+  enrollCall = ''
+    import json, socket
+
+    def ask_directory(action, data, groups):
+        req = {
+            "action": action,
+            "username": data.get("username"),
+            "name": data.get("name"),
+            "email": data.get("email"),
+            "password": data.get("password"),
+            "groups": groups,
+        }
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(30)
+            s.connect(${q dirEn.socket})
+            s.sendall(json.dumps(req).encode() + b"\n")
+            buf = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            s.close()
+            return json.loads(buf)
+        except Exception as e:
+            ak_logger.warning("swag enrollment: directory unreachable", error=str(e))
+            return {"ok": False, "error": "The account could not be created. Please try again later."}
+  '';
+  enrollCheckExpression = enrollCall + ''
+
+    reply = ask_directory("check", request.context.get("prompt_data") or {}, [])
+    if not reply.get("ok"):
+        ak_message(reply.get("error") or "Check your details.")
+        return False
+    return True
+  '';
+  # True means "failed": the policy gates the deny stage that reports it.
+  enrollCreateExpression = enrollCall + ''
+
+    ctx = request.context
+    data = ctx.get("prompt_data") or {}
+    groups = []
+    if ctx.get("invitation_in_effect"):
+        extra = data.get("groups") or []
+        if isinstance(extra, str):
+            extra = [extra]
+        groups = [${q en.accessGroup}] + [g for g in extra if g != ${q en.accessGroup}]
+    reply = ask_directory("create", data, groups)
+    # The password has done its job; keep it out of the stored plan.
+    data.pop("password", None)
+    data.pop("password_repeat", None)
+    if not reply.get("ok"):
+        ak_message(reply.get("error") or "The account could not be created.")
+        return True
+    try:
+        from authentik.sources.ldap.models import LDAPSource
+        from authentik.sources.ldap.tasks import ldap_sync
+        source = LDAPSource.objects.filter(slug=${q ds.slug}).first()
+        if source is not None:
+            ldap_sync.send(str(source.pk))
+    except Exception as e:
+        ak_logger.warning("swag enrollment: could not queue a directory sync", error=str(e))
+    return False
+  '';
+  accessExpression = ''
+    return request.user.is_superuser or ak_is_group_member(request.user, name=${q en.accessGroup})
+  '';
+  expressionPolicy = id: name: expr: [
+    "  - model: authentik_policies_expression.expressionpolicy"
+    "    id: ${id}"
+    "    identifiers:"
+    "      name: ${name}"
+    "    attrs:"
+    "      expression: |"
+    (indentLines 8 expr)
+  ];
+  promptField = id: key: label: type: order: extra: [
+    "  - model: authentik_stages_prompt.prompt"
+    "    id: ${id}"
+    "    identifiers:"
+    "      name: swag-enrollment-field-${id}"
+    "    attrs:"
+    "      field_key: ${key}"
+    "      label: ${q label}"
+    "      type: ${type}"
+    "      required: true"
+    "      placeholder: ${q label}"
+    "      placeholder_expression: false"
+    "      order: ${toString order}"
+  ] ++ extra;
+  staticField = id: text: promptField id id "Done" "static" 0 [
+    "      initial_value: ${q text}"
+  ];
+  # A stage binding whose policies run when the stage is reached (with the
+  # whole plan as context), not when the flow is planned.
+  lateBinding = id: target: stage: order: [
+    "  - model: authentik_flows.flowstagebinding"
+    "    id: ${id}"
+    "    identifiers:"
+    "      target: ${target}"
+    "      stage: ${stage}"
+    "      order: ${toString order}"
+    "    attrs:"
+    "      evaluate_on_plan: false"
+    "      re_evaluate_policies: true"
+  ];
+  policyBinding = target: policy: negate: [
+    "  - model: authentik_policies.policybinding"
+    "    identifiers:"
+    "      target: ${target}"
+    "      policy: ${policy}"
+    "      order: 0"
+    "    attrs:"
+    "      negate: ${boolToString negate}"
+  ];
+  enrollmentBlueprintYaml = concatStringsSep "\n" (
+    [
+      "version: 1"
+      "metadata:"
+      "  name: swag-enrollment"
+      "  labels:"
+      "    blueprints.goauthentik.io/instantiate: \"true\""
+      "entries:"
+    ]
+    ++ metaApply "Default - Authentication flow"
+    ++ expressionPolicy "check" "swag-enrollment-check" enrollCheckExpression
+    ++ expressionPolicy "create-failed" "swag-enrollment-create" enrollCreateExpression
+    ++ expressionPolicy "invited" "swag-enrollment-invited" ''
+      return bool(request.context.get("invitation_in_effect"))
+    ''
+    ++ expressionPolicy "access" "swag-access-group" accessExpression
+    ++ promptField "username" "username" "Username" "username" 0 [ ]
+    ++ promptField "name" "name" "Name" "text" 1 [ ]
+    ++ promptField "email" "email" "Email" "email" 2 [ ]
+    ++ promptField "password" "password" "Password" "password" 3 [ ]
+    ++ promptField "password-repeat" "password_repeat" "Password (repeat)" "password" 4 [ ]
+    ++ staticField "done-active" "Your account is ready. Continue to sign in."
+    ++ staticField "done-pending" "Thanks! Your account is waiting for approval; you can sign in once it's approved."
+    ++ [
+      "  - model: authentik_stages_invitation.invitationstage"
+      "    id: invitation"
+      "    identifiers:"
+      "      name: swag-enrollment-invitation"
+      "    attrs:"
+      "      continue_flow_without_invitation: ${boolToString en.signup}"
+      "  - model: authentik_stages_prompt.promptstage"
+      "    id: details"
+      "    identifiers:"
+      "      name: swag-enrollment-details"
+      "    attrs:"
+      "      fields: [!KeyOf username, !KeyOf name, !KeyOf email, !KeyOf password, !KeyOf password-repeat]"
+      "      validation_policies: [!KeyOf check]"
+      "  - model: authentik_stages_deny.denystage"
+      "    id: failed"
+      "    identifiers:"
+      "      name: swag-enrollment-failed"
+      "    attrs:"
+      "      deny_message: \"Your account could not be created.\""
+      "  - model: authentik_stages_prompt.promptstage"
+      "    id: done-active-stage"
+      "    identifiers:"
+      "      name: swag-enrollment-done-active"
+      "    attrs:"
+      "      fields: [!KeyOf done-active]"
+      "  - model: authentik_stages_prompt.promptstage"
+      "    id: done-pending-stage"
+      "    identifiers:"
+      "      name: swag-enrollment-done-pending"
+      "    attrs:"
+      "      fields: [!KeyOf done-pending]"
+      "  - model: authentik_stages_deny.denystage"
+      "    id: pending"
+      "    identifiers:"
+      "      name: swag-access-pending"
+      "    attrs:"
+      "      deny_message: ${q en.pendingMessage}"
+      "  - model: authentik_flows.flow"
+      "    id: flow"
+      "    identifiers:"
+      "      slug: ${q en.slug}"
+      "    attrs:"
+      "      name: ${q en.title}"
+      "      title: ${q en.title}"
+      "      designation: enrollment"
+      "      authentication: require_unauthenticated"
+      "  - model: authentik_flows.flowstagebinding"
+      "    identifiers:"
+      "      target: !KeyOf flow"
+      "      stage: !KeyOf invitation"
+      "      order: 10"
+      "  - model: authentik_flows.flowstagebinding"
+      "    identifiers:"
+      "      target: !KeyOf flow"
+      "      stage: !KeyOf details"
+      "      order: 20"
+    ]
+    ++ lateBinding "failed-binding" "!KeyOf flow" "!KeyOf failed" 30
+    ++ policyBinding "!KeyOf failed-binding" "!KeyOf create-failed" false
+    ++ lateBinding "done-active-binding" "!KeyOf flow" "!KeyOf done-active-stage" 40
+    ++ policyBinding "!KeyOf done-active-binding" "!KeyOf invited" false
+    ++ lateBinding "done-pending-binding" "!KeyOf flow" "!KeyOf done-pending-stage" 41
+    ++ policyBinding "!KeyOf done-pending-binding" "!KeyOf invited" true
+    # The gate on the default login: after the password, before MFA, so
+    # an account awaiting approval isn't asked to set up a factor first.
+    ++ lateBinding "pending-binding" "!Find [authentik_flows.flow, [slug, default-authentication-flow]]" "!KeyOf pending" 25
+    ++ policyBinding "!KeyOf pending-binding" "!KeyOf access" true
+    ++ [
+      "  - model: authentik_stages_identification.identificationstage"
+      "    identifiers:"
+      "      name: default-authentication-identification"
+      "    attrs:"
+      # Validated as a whole: user_fields (the default flow's own) must
+      # come along, or the stage looks like it has no way to identify.
+      "      user_fields: [email, username]"
+      "      enrollment_flow: ${if en.signup then "!KeyOf flow" else "null"}"
+      ""
+    ]
+  );
+
   # nginx forward auth against the proxy outpost, expressed through swag
   # web's generic vhost hooks (see the Forward-auth block below).
   outpostUrl = "http://${cfg.outposts.proxy.listenHTTP}";
@@ -675,6 +907,8 @@ print(f"source {slug}: sync queued")
       ${optionalString hasOidcClients "cp ${pkgs.writeText "swag-oidc-clients.yaml" oidcClientsBlueprintYaml} $out/swag-oidc-clients.yaml"}
       # Directory LDAP source
       ${optionalString ds.enable "cp ${directorySourceBlueprint} $out/swag-directory-source.yaml"}
+      # Enrollment flow and the login gate
+      ${optionalString en.enable "cp ${pkgs.writeText "swag-enrollment.yaml" enrollmentBlueprintYaml} $out/swag-enrollment.yaml"}
     '';
 in
 {
@@ -743,7 +977,7 @@ in
         settings = mkMerge [
           cfg.settings
           { email = cfg.email; }
-          (mkIf (cfg.blueprints != { } || hasProxyApps || hasOidcClients || mfa.enforce || ds.enable) { blueprints_dir = "${blueprintsDir}"; })
+          (mkIf (cfg.blueprints != { } || hasProxyApps || hasOidcClients || mfa.enforce || ds.enable || en.enable) { blueprints_dir = "${blueprintsDir}"; })
         ];
 
         # When there are server secrets, use the assembled env file; otherwise
@@ -1055,6 +1289,10 @@ in
           "swag-directory-provision.service"
         ];
         wantedBy = [ "multi-user.target" ];
+        # Re-run (and so re-sync) whenever provisioning re-runs: a group
+        # declared or a membership added reaches Authentik at once, not at
+        # the next scheduled sync. That matters for the enrollment gate.
+        partOf = optional hasDirectory "swag-directory-provision.service";
         restartTriggers = [ directorySourceBlueprint ];
         serviceConfig = {
           Type = "oneshot";
@@ -1078,6 +1316,27 @@ in
         displayName = mkDefault "Authentik";
         groups = [ (if ds.passwordWriteback then "lldap_password_manager" else "lldap_strict_readonly") ];
         passwordFile = ds.bindPasswordFile;
+      };
+    }))
+
+    # ── Enrollment: accounts created in the directory ───────────────────────
+    (mkIf en.enable {
+      assertions = [
+        {
+          assertion = hasDirectory && ds.enable;
+          message = "services.swag.authentik.enrollment needs services.swag.directory on this host and services.swag.authentik.directorySource.enable: accounts are created in the directory and reach Authentik through the sync.";
+        }
+      ];
+      # The policies run in the server; only it may reach the socket.
+      systemd.services.authentik.serviceConfig.SupplementaryGroups = [ dirEn.clientGroup ];
+    })
+    (optionalAttrs directoryDeclared (mkIf (en.enable && hasDirectory) {
+      services.swag.directory = {
+        groups.${en.accessGroup} = { };
+        enrollment = {
+          enable = true;
+          grantableGroups = [ en.accessGroup ] ++ en.grantableGroups;
+        };
       };
     }))
 

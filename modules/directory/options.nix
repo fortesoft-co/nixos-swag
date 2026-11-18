@@ -46,6 +46,49 @@ in
       '';
     };
 
+    enrollment = {
+      enable = mkEnableOption ''
+        the enrollment endpoint: a local socket through which a sign-up front
+        end (services.swag.authentik.enrollment) creates directory accounts.
+        One instance per connection; it holds the lldap admin password as a
+        systemd credential, and only members of clientGroup can connect
+      '';
+
+      socket = mkOption {
+        type = types.str;
+        default = "/run/swag-directory-enroll.sock";
+        readOnly = true;
+        description = "Path of the enrollment socket.";
+      };
+
+      clientGroup = mkOption {
+        type = types.str;
+        default = "swag-directory-enroll-clients";
+        description = ''
+          Unix group allowed to connect to the socket (mode 0660). Add the
+          front end's unit to it with SupplementaryGroups.
+        '';
+      };
+
+      grantableGroups = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "members" "git-users" ];
+        description = ''
+          Groups an enrollment may put the new account in; a request asking
+          for any other group is refused. Each must be declared in
+          services.swag.directory.groups, and lldap's built-in groups
+          (lldap_admin, …) can never be granted.
+        '';
+      };
+
+      minPasswordLength = mkOption {
+        type = types.ints.between 8 128;
+        default = 12;
+        description = "Shortest password a new account may have.";
+      };
+    };
+
     ldap = {
       address = mkOption {
         type = types.str;

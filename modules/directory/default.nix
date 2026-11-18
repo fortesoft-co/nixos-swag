@@ -5,6 +5,11 @@
 # GraphQL API). Other services consume the directory over LDAP: Authentik
 # syncs users from it, LDAP-only apps can bind to it directly.
 #
+# Enrollment (optional): swag-directory-enroll.socket, one instance per
+# connection, creates accounts for a sign-up front end (Authentik's
+# enrollment flow). The socket's group is the access control; the instance
+# grants only grantableGroups (see enroll.py).
+#
 # Secrets: the admin password (and the JWT secret, when given) reach lldap as
 # systemd credentials, and the admin password plus each user's initial
 # password reach the provisioning unit the same way. systemd reads the
@@ -53,21 +58,63 @@ let
     _: u: u.initialPasswordFile != null || u.passwordFile != null
   ) cfg.users;
 
+  # The units' Python, next to the lldap client they share (a store path,
+  # so the script directory on sys.path can't be written to).
+  scripts = pkgs.runCommand "swag-directory-scripts" { } ''
+    mkdir $out
+    cp ${./lldap.py} $out/lldap.py
+    cp ${./provision.py} $out/provision.py
+    cp ${./enroll.py} $out/enroll.py
+  '';
+  # -E -s: no PYTHON* environment, no user site; unlike -I, keeps the
+  # script's directory on sys.path for lldap.py.
+  python = "${pkgs.python3}/bin/python3 -E -s";
+
+  lldapClientConfig = {
+    httpUrl = "http://127.0.0.1:${toString cfg.http.port}";
+    ldapUrl = "ldap://127.0.0.1:${toString cfg.ldap.port}";
+    inherit (cfg) baseDn adminUsername;
+    ldappasswd = "${pkgs.openldap}/bin/ldappasswd";
+    ldapwhoami = "${pkgs.openldap}/bin/ldapwhoami";
+  };
+
   provisionConfig = pkgs.writeText "swag-directory.json" (
-    builtins.toJSON {
-      httpUrl = "http://127.0.0.1:${toString cfg.http.port}";
-      ldapUrl = "ldap://127.0.0.1:${toString cfg.ldap.port}";
-      inherit (cfg) baseDn adminUsername;
-      ldappasswd = "${pkgs.openldap}/bin/ldappasswd";
-      ldapwhoami = "${pkgs.openldap}/bin/ldapwhoami";
-      groups = attrNames cfg.groups;
-      users = mapAttrs (_: u: {
-        inherit (u) email displayName groups;
-        hasInitialPassword = u.initialPasswordFile != null;
-        managedPassword = u.passwordFile != null;
-      }) cfg.users;
-    }
+    builtins.toJSON (
+      lldapClientConfig
+      // {
+        groups = attrNames cfg.groups;
+        users = mapAttrs (_: u: {
+          inherit (u) email displayName groups;
+          hasInitialPassword = u.initialPasswordFile != null;
+          managedPassword = u.passwordFile != null;
+        }) cfg.users;
+      }
+    )
   );
+
+  en = cfg.enrollment;
+  enrollConfig = pkgs.writeText "swag-directory-enroll.json" (
+    builtins.toJSON (lldapClientConfig // { inherit (en) grantableGroups minPasswordLength; })
+  );
+
+  # The units that hold the lldap admin password: no identity of their own,
+  # nothing writable but a private /tmp, network only to localhost.
+  adminUnitHardening = {
+    DynamicUser = true;
+    PrivateTmp = true;
+    ProtectSystem = "strict";
+    ProtectHome = true;
+    ProtectProc = "invisible";
+    NoNewPrivileges = true;
+    CapabilityBoundingSet = "";
+    RestrictAddressFamilies = [
+      "AF_INET"
+      "AF_INET6"
+    ];
+    IPAddressAllow = "localhost";
+    IPAddressDeny = "any";
+    UMask = "0077";
+  };
 
   builtinGroups = [
     "lldap_admin"
@@ -128,7 +175,7 @@ in
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
-          ExecStart = "${pkgs.python3}/bin/python3 -I ${./provision.py} ${provisionConfig}";
+          ExecStart = "${python} ${scripts}/provision.py ${provisionConfig}";
           LoadCredential = [
             "admin-password:${cfg.adminPasswordFile}"
           ]
@@ -136,23 +183,58 @@ in
             name: u:
             "user-${name}:${if u.passwordFile != null then u.passwordFile else u.initialPasswordFile}"
           ) usersWithPassword;
-          DynamicUser = true;
-          PrivateTmp = true;
-          ProtectSystem = "strict";
-          ProtectHome = true;
-          ProtectProc = "invisible";
-          NoNewPrivileges = true;
-          CapabilityBoundingSet = "";
-          RestrictAddressFamilies = [
-            "AF_INET"
-            "AF_INET6"
-          ];
-          IPAddressAllow = "localhost";
-          IPAddressDeny = "any";
-          UMask = "0077";
-        };
+        }
+        // adminUnitHardening;
       };
     }
+
+    # Enrollment endpoint: one service instance per connection, with the
+    # connection as stdin/stdout. The socket is the access control.
+    (mkIf en.enable {
+      assertions = [
+        {
+          assertion = all (g: cfg.groups ? ${g}) en.grantableGroups;
+          message = "services.swag.directory.enrollment.grantableGroups must be declared in services.swag.directory.groups: ${concatStringsSep ", " (filter (g: !(cfg.groups ? ${g})) en.grantableGroups)}.";
+        }
+        {
+          assertion = !(any (g: elem g builtinGroups) en.grantableGroups);
+          message = "services.swag.directory.enrollment.grantableGroups can't include lldap's built-in groups (${concatStringsSep ", " builtinGroups}).";
+        }
+      ];
+
+      users.groups.${en.clientGroup} = { };
+
+      systemd.sockets.swag-directory-enroll = {
+        description = "Directory enrollment endpoint";
+        wantedBy = [ "sockets.target" ];
+        socketConfig = {
+          ListenStream = en.socket;
+          SocketUser = "root";
+          SocketGroup = en.clientGroup;
+          SocketMode = "0660";
+          Accept = true;
+          MaxConnections = 8;
+        };
+      };
+
+      systemd.services."swag-directory-enroll@" = {
+        description = "Create a directory account";
+        after = [
+          "lldap.service"
+          "swag-directory-provision.service"
+        ];
+        requires = [ "lldap.service" ];
+        serviceConfig = {
+          ExecStart = "${python} ${scripts}/enroll.py ${enrollConfig}";
+          StandardInput = "socket";
+          StandardOutput = "socket";
+          StandardError = "journal";
+          LoadCredential = [ "admin-password:${cfg.adminPasswordFile}" ];
+          RuntimeMaxSec = "60s";
+        }
+        // adminUnitHardening;
+      };
+    })
 
     # Admin web UI on swag web.
     (optionalAttrs webDeclared (mkIf (hasWeb && dashboardDomain != null) {
