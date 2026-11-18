@@ -7,6 +7,7 @@
   # Tunnel options come with the default module; point this input at your
   # own copy with inputs.nixos-swag.inputs.nixos-cloudflared.follows.
   inputs.nixos-cloudflared.url = "github:fortesoft-co/nixos-cloudflared";
+  inputs.nixos-cloudflared.inputs.nixpkgs.follows = "nixpkgs";
   # Upstream Authentik module, brought in by nixosModules.authentik; follow it
   # from your own flake to pin a different revision.
   inputs.authentik-nix.url = "github:nix-community/authentik-nix";
