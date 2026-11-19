@@ -722,9 +722,12 @@ else:
   '';
 
   # Stores the directory source's bind password (from a credential) once the
-  # blueprint has created the source, then queues a sync so users appear
-  # without waiting for the schedule. Idempotent.
+  # blueprint has created the source, records the directory connection of
+  # users linked by username (directory-adopt.py), then queues a sync so
+  # users appear without waiting for the schedule. Idempotent.
+  # Output through cat, filed under this unit (see mkDirectoryPrune).
   mkDirectorySourceSetup = ''
+    set -o pipefail
     ${config.systemd.package}/bin/systemd-run --wait --pipe --collect \
       ${concatStringsSep " \\\n      " akOptions} \
       --setenv SOURCE_SLUG="${ds.slug}" \
@@ -756,9 +759,11 @@ if source.bind_password != password:
 else:
     print(f"source {slug}: bind password already in sync")
 
+exec(open("${./directory-adopt.py}").read())
+
 ldap_sync.send(str(source.pk))
 print(f"source {slug}: sync queued")
-'
+' 2>&1 | ${pkgs.coreutils}/bin/cat
   '';
 
   # Publishes directorySource.subjectMap: subject-map.py prints
@@ -775,6 +780,7 @@ print(f"source {slug}: sync queued")
       ${concatStringsSep " \\\n      " akOptions} \
       --setenv SOURCE_SLUG="${ds.slug}" \
       --setenv ID_ATTRIBUTE="${toString ds.idAttribute}" \
+      --setenv ADOPT_SCRIPT="${./directory-adopt.py}" \
       --working-directory /var/lib/authentik \
       -- ${managePy} shell -c 'exec(open("${./subject-map.py}").read())' \
       2>&1 | while IFS= read -r line; do

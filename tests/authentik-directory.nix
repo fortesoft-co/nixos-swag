@@ -121,6 +121,18 @@ pkgs.testers.runNixOSTest {
             timeout=300,
         )
 
+    def lldap_gql(query, check):
+        login = json.dumps({"username": "admin", "password": "admin-password-1"})
+        token = json.loads(machine.succeed(
+            f"curl -sf -H 'Content-Type: application/json' -d {shlex.quote(login)}"
+            " http://127.0.0.1:17170/auth/simple/login"
+        ))["token"]
+        body = json.dumps({"query": query})
+        machine.succeed(
+            f"curl -sf -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json'"
+            f" -d {shlex.quote(body)} http://127.0.0.1:17170/api/graphql | jq -e '{check}'"
+        )
+
     def entry_uuid(user):
         out = machine.succeed(
             f"ldapsearch {ldap} -D uid=admin,ou=people,dc=example,dc=com -w admin-password-1"
@@ -150,6 +162,28 @@ pkgs.testers.runNixOSTest {
         assert not any(akadmin["uid"] in l for l in lines), lines
         assert machine.succeed("stat -c %a /run/swag-authentik/subject-map").strip() == "644"
 
+    with subtest("a user that existed before the directory is recognized as from it"):
+        # Authentik first, the directory account later: the sync links them by
+        # username without recording a connection; setup records it.
+        pk = json.loads(machine.succeed(
+            f"curl -sf {auth} -X POST -H 'Content-Type: application/json'"
+            " -d '{\"username\": \"frank\", \"name\": \"Frank\"}'"
+            f" '{api}/core/users/'"
+        ))["pk"]
+        lldap_gql(
+            'mutation { createUser(user: {id: "frank", email: "frank@example.com"}) { id } }',
+            '.data.createUser.id == "frank"',
+        )
+        resync()
+        machine.succeed("systemctl start authentik-subject-map.service")
+        frank = get("/core/users/?username=frank")["results"][0]
+        assert frank["pk"] == pk, "frank was re-created instead of linked"
+        lines = machine.succeed("cat /run/swag-authentik/subject-map").splitlines()
+        assert f"{frank['uid']} {entry_uuid('frank')}" in lines, lines
+        # Whichever runs first records it: the subject map, or the setup.
+        out = machine.succeed("journalctl -u authentik-subject-map -u authentik-directory-source-setup -o cat")
+        assert "user frank: linked by username; recorded as from the directory" in out, out
+
     with subtest("deleted in Authentik and re-created by the sync, the ID stays"):
         machine.succeed(f"curl -sf {auth} -X DELETE '{api}/core/users/{alice['pk']}/'")
         resync()
@@ -170,16 +204,7 @@ pkgs.testers.runNixOSTest {
         machine.fail(f"ldapwhoami {ldap} -D {alice_dn} -w alice-initial-pw")
 
     def lldap_delete(user):
-        login = json.dumps({"username": "admin", "password": "admin-password-1"})
-        token = json.loads(machine.succeed(
-            f"curl -sf -H 'Content-Type: application/json' -d {shlex.quote(login)}"
-            " http://127.0.0.1:17170/auth/simple/login"
-        ))["token"]
-        query = json.dumps({"query": f'mutation {{ deleteUser(userId: "{user}") {{ ok }} }}'})
-        machine.succeed(
-            f"curl -sf -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json'"
-            f" -d {shlex.quote(query)} http://127.0.0.1:17170/api/graphql | jq -e '.data.deleteUser.ok'"
-        )
+        lldap_gql(f'mutation {{ deleteUser(userId: "{user}") {{ ok }} }}', ".data.deleteUser.ok")
 
     def journal(expect):
         cmd = "journalctl -u authentik-directory-prune.service -o cat"

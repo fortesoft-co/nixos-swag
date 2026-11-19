@@ -19,6 +19,9 @@ if source is None or not source.enabled or not source.sync_users or not source.b
     print(f"source {slug}: not set up yet or not syncing users; no subjects to map")
     raise SystemExit(0)
 
+# Users linked by username have no connection until this records one.
+exec(open(os.environ["ADOPT_SCRIPT"]).read())
+
 base = source.base_dn
 if source.additional_user_dn:
     base = f"{source.additional_user_dn},{base}"
