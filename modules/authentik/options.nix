@@ -684,6 +684,36 @@ in
           the directory stays the source of truth for passwords too.
         '';
       };
+      idAttribute = mkOption {
+        type = types.nullOr types.str;
+        default = "entryUUID";
+        description = ''
+          Directory attribute holding each account's permanent ID (lldap and
+          OpenLDAP: entryUUID). The sync stores it on the Authentik user, and
+          OIDC clients from services.swag.authentik.oidcClients send it to
+          apps as the user's ID (sub). It belongs to the directory account,
+          so it survives the Authentik user being deleted and re-created,
+          and a new account that reuses a username gets a new one. Users
+          without it (local Authentik users) keep Authentik's own hashed ID.
+          Apps that already know users by the hashed ID learn the new one
+          from subjectMap. null = apps get Authentik's hashed ID for
+          everyone.
+        '';
+      };
+      subjectMap = mkOption {
+        type = types.str;
+        default = "/run/swag-authentik/subject-map";
+        readOnly = true;
+        description = ''
+          File listing, one user per line, "<old ID> <new ID>": the hashed ID
+          an app may know a directory user by, and the directory ID OIDC
+          clients send instead. Written by authentik-subject-map.service from
+          the directory itself, so it is complete before the sync switches a
+          user over; refreshed every 10 minutes, and only rewritten when it
+          changes. App-side modules watch it and link each
+          account to its new ID. Mode 0644; it holds no secrets or usernames.
+        '';
+      };
       removeDeletedUsers = {
         enable = mkOption {
           type = types.bool;

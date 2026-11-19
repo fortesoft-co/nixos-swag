@@ -271,12 +271,35 @@ services.swag.directory.users.alice.groups = [ "members" ];  # existing users
   delete it there, but no longer let them sign in.
 - **Locking someone out, keeping the account.** Deactivate them in
   Authentik. Don't delete them only in Authentik: the directory still has
-  them, so the next sync brings them back, without their MFA devices.
+  them, so the next sync brings them back, without their MFA devices
+  (they set one up again at their next login).
 - **Safe by construction.** The directory creates accounts through a local
   socket that only the Authentik server can open. It holds the lldap admin
   password as a systemd credential, refuses any group not in
   `grantableGroups` (and lldap's admin groups always), and never logs or
   stores the password it sets.
+
+## User IDs apps see
+
+OIDC apps know each person by the ID Authentik sends (`sub`). With the
+directory, that ID is the directory account's own (`entryUUID`,
+`directorySource.idAttribute`), stored on the Authentik user by the sync:
+
+- **It survives Authentik.** A user deleted in Authentik and brought back by
+  the sync has the same ID, so apps still recognize them.
+- **A reused username is a new person.** A new directory account gets a new
+  ID even under an old name, so an app that matches people by ID never hands
+  it the previous owner's account.
+- **Local users keep Authentik's ID.** akadmin and other users that don't
+  come from the directory get Authentik's own hashed ID, as before.
+
+Apps that already know people by Authentik's hashed ID (a directory added
+after the fact, or an existing install) learn the new one from
+`directorySource.subjectMap`: a file of `<old ID> <new ID>` lines, written
+from the directory before the sync switches anyone over and refreshed every
+10 minutes. An app-side module watches it and links each account to its new
+ID as well, keeping the old one, so nobody's sign-in breaks during the
+switch. swag knows nothing about the apps; the file is the whole contract.
 
 ## Going public
 
@@ -348,7 +371,7 @@ nix flake check
 | Check | What it proves |
 |---|---|
 | `directory` | Users, groups and initial passwords are provisioned; secrets are readable only by the unit that needs them; a password the user changed survives re-provisioning; provisioning is idempotent |
-| `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; a user deleted in lldap is removed from Authentik, a superuser is not; more removals than the limit apply none; no secret on a command line |
+| `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; directory users carry the directory's ID, OIDC clients send it, local users keep Authentik's, the subject map pairs old and new IDs, and the ID survives the user being re-created; a user deleted in lldap is removed from Authentik, a superuser is not; more removals than the limit apply none; no secret on a command line |
 | `authentik-oidc` | OIDC clients get the declared IDs, redirect URIs, grants, group bindings and secrets; discovery is served; no secret in the store or the process table |
 | `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; the enrollment socket is closed to other users; no password on a command line or in the journal |
 | `authentik-public` | The public name resolves locally; the admin interface is refused through the tunnel only; the local name redirects; logins without a second factor are sent to enrollment |

@@ -41,6 +41,7 @@ pkgs.testers.runNixOSTest {
           echo 'test-secret-key-0123456789abcdef0123456789abcdef' > /run/test-secrets/ak-secret
           echo 'akadmin-password-1' > /run/test-secrets/ak-admin
           echo 'test-api-token-0123456789' > /run/test-secrets/ak-token
+          echo 'app-client-secret-0123456789' > /run/test-secrets/app-client
         '';
       };
       systemd.services.lldap.requires = [ "test-secrets.service" ];
@@ -77,6 +78,13 @@ pkgs.testers.runNixOSTest {
           bindPasswordFile = "/run/test-secrets/bind";
           removeDeletedUsers.maxPerRun = 1;
         };
+        url = "http://127.0.0.1:9000";
+        # An OIDC client, to check the subject mode it gets.
+        oidcClients.app = {
+          name = "App";
+          clientSecretFile = "/run/test-secrets/app-client";
+          redirectUris = [ "http://127.0.0.1:8080/callback" ];
+        };
       };
     };
 
@@ -112,6 +120,46 @@ pkgs.testers.runNixOSTest {
             " | jq -e '[.results[0].users_obj[].username] | index(\"alice\") != null'",
             timeout=300,
         )
+
+    def entry_uuid(user):
+        out = machine.succeed(
+            f"ldapsearch {ldap} -D uid=admin,ou=people,dc=example,dc=com -w admin-password-1"
+            f" -b ou=people,dc=example,dc=com -LLL '(uid={user})' entryUUID"
+        )
+        return next(l.split(":", 1)[1].strip() for l in out.splitlines() if l.lower().startswith("entryuuid:"))
+
+    def resync():
+        machine.succeed("systemctl restart authentik-directory-source-setup.service")
+
+    with subtest("a directory user carries the directory's ID, and apps are sent it"):
+        uuid = entry_uuid("alice")
+        machine.wait_until_succeeds(
+            f"curl -sf {auth} '{api}/core/users/?username=alice' | jq -e '.results[0].attributes.upn == \"{uuid}\"'",
+            timeout=120,
+        )
+        provider = get("/providers/oauth2/?name=app")["results"][0]
+        assert provider["sub_mode"] == "user_upn", provider
+        akadmin = get("/core/users/?username=akadmin")["results"][0]
+        assert "upn" not in akadmin["attributes"], akadmin
+
+    with subtest("the subject map pairs each directory user's old ID with the new one"):
+        machine.succeed("systemctl start authentik-subject-map.service")
+        alice = get("/core/users/?username=alice")["results"][0]
+        lines = machine.succeed("cat /run/swag-authentik/subject-map").splitlines()
+        assert f"{alice['uid']} {uuid}" in lines, lines
+        assert not any(akadmin["uid"] in l for l in lines), lines
+        assert machine.succeed("stat -c %a /run/swag-authentik/subject-map").strip() == "644"
+
+    with subtest("deleted in Authentik and re-created by the sync, the ID stays"):
+        machine.succeed(f"curl -sf {auth} -X DELETE '{api}/core/users/{alice['pk']}/'")
+        resync()
+        machine.wait_until_succeeds(
+            f"curl -sf {auth} '{api}/core/users/?username=alice' | jq -e '.results[0].attributes.upn == \"{uuid}\"'",
+            timeout=120,
+        )
+        recreated = get("/core/users/?username=alice")["results"][0]
+        assert recreated["pk"] != alice["pk"], "alice was not re-created"
+        alice = recreated
 
     with subtest("a password set in Authentik is written back to the directory"):
         machine.succeed(

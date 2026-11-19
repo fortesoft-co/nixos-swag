@@ -107,6 +107,31 @@ let
         "  labels:"
         "    blueprints.goauthentik.io/instantiate: \"true\""
         "entries:"
+      ]
+      ++ optionals (ds.idAttribute != null) (
+        [
+          # Stores the directory account's permanent ID as the user's "upn"
+          # attribute, which OIDC clients send as sub (sub_mode user_upn).
+          "  - model: authentik_sources_ldap.ldapsourcepropertymapping"
+          "    id: directory-id"
+          "    identifiers:"
+          "      name: \"swag: directory ID\""
+          "    state: present"
+          "    attrs:"
+          "      name: \"swag: directory ID\""
+          "      expression: |"
+        ]
+        ++ map (l: "        ${l}") [
+          "wanted = ${q (toLower ds.idAttribute)}"
+          "value = next((v for k, v in ldap.items() if k.lower() == wanted), None)"
+          "if isinstance(value, (list, tuple)):"
+          "    value = value[0] if value else None"
+          "if not value:"
+          "    return {}"
+          "return {\"attributes\": {\"upn\": str(value)}}"
+        ]
+      )
+      ++ [
         "  - model: authentik_sources_ldap.ldapsource"
         "    identifiers:"
         "      slug: ${q ds.slug}"
@@ -137,6 +162,7 @@ let
         "openldap-uid"
         "openldap-cn"
       ]
+      ++ optional (ds.idAttribute != null) "        - !KeyOf directory-id"
       ++ [
         "      group_property_mappings:"
         "        - ${findLdapMapping "openldap-cn"}"
@@ -735,6 +761,36 @@ print(f"source {slug}: sync queued")
 '
   '';
 
+  # Publishes directorySource.subjectMap: subject-map.py prints
+  # "SUBJECT <old> <new>" lines among the shell's own output; they are
+  # collected, sorted and moved into place only when the map changed, so
+  # path units watching it fire on real changes. The rest goes to the
+  # journal through this unit (see mkDirectoryPrune on why it's piped).
+  mkSubjectMap = ''
+    set -o pipefail
+    map=${ds.subjectMap}
+    tmp=$(${pkgs.coreutils}/bin/mktemp "$map.XXXXXX")
+    trap '${pkgs.coreutils}/bin/rm -f "$tmp"' EXIT
+    ${config.systemd.package}/bin/systemd-run --wait --pipe --collect \
+      ${concatStringsSep " \\\n      " akOptions} \
+      --setenv SOURCE_SLUG="${ds.slug}" \
+      --setenv ID_ATTRIBUTE="${toString ds.idAttribute}" \
+      --working-directory /var/lib/authentik \
+      -- ${managePy} shell -c 'exec(open("${./subject-map.py}").read())' \
+      2>&1 | while IFS= read -r line; do
+        case "$line" in
+          "SUBJECT "*) printf '%s\n' "''${line#SUBJECT }" >> "$tmp" ;;
+          *) printf '%s\n' "$line" ;;
+        esac
+      done
+    ${pkgs.coreutils}/bin/sort -o "$tmp" "$tmp"
+    if ! ${pkgs.diffutils}/bin/cmp -s "$tmp" "$map"; then
+      ${pkgs.coreutils}/bin/chmod 0644 "$tmp"
+      ${pkgs.coreutils}/bin/mv "$tmp" "$map"
+      echo "subject map updated: $(${pkgs.coreutils}/bin/wc -l < "$map") users"
+    fi
+  '';
+
   # Removes Authentik users whose directory account is gone, with the guards
   # in directory-prune.py. Same transient-unit pattern; nothing secret. The
   # output goes through cat so the journal files it under this unit (written
@@ -856,6 +912,11 @@ print(f"source {slug}: sync queued")
         # Blueprint-made providers start with none allowed.
         "      grant_types: [authorization_code, refresh_token]"
         "      client_id: ${builtins.toJSON c.clientId}"
+      ]
+      # The directory ID when the user has one (directorySource.idAttribute),
+      # Authentik's hashed ID otherwise: user_upn falls back to it.
+      ++ optional (ds.idAttribute != null) "      sub_mode: user_upn"
+      ++ [
         "      authorization_flow: !KeyOf auth-flow"
         "      invalidation_flow: !KeyOf inv-flow"
         "      signing_key: !Find [authentik_crypto.certificatekeypair, [name, \"authentik Self-signed Certificate\"]]"
@@ -1315,6 +1376,32 @@ in
           TimeoutStartSec = 300;
         };
         script = mkDirectorySourceSetup;
+      };
+    })
+
+    # ── Directory source: subject map for apps ──────────────────────────────
+    # Runs before the setup unit queues its sync, so on a boot that switches
+    # users to their directory ID the map is already there; the timer picks
+    # up users linked later.
+    (mkIf (ds.enable && ds.idAttribute != null) {
+      systemd.tmpfiles.rules = [ "d ${dirOf ds.subjectMap} 0755 root root -" ];
+      systemd.services.authentik-subject-map = {
+        description = "Publish the directory IDs apps know users by";
+        after = [ "authentik-migrate.service" ] ++ optional hasDirectory "swag-directory-provision.service";
+        before = [ "authentik-directory-source-setup.service" ];
+        wantedBy = [ "authentik-directory-source-setup.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          TimeoutStartSec = 300;
+        };
+        script = mkSubjectMap;
+      };
+      systemd.timers.authentik-subject-map = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "10min";
+          OnUnitInactiveSec = "10min";
+        };
       };
     })
 
