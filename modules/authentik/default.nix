@@ -411,7 +411,11 @@ let
         from authentik.sources.ldap.tasks import ldap_sync
         source = LDAPSource.objects.filter(slug=${q ds.slug}).first()
         if source is not None:
-            ldap_sync.send(str(source.pk))
+            # Authentik skips a sync while another is running, and that one
+            # may have read the directory before this account existed; the
+            # delayed ones run after it.
+            for delay in (None, 30000, 120000):
+                ldap_sync.send_with_options(args=(str(source.pk),), delay=delay)
     except Exception as e:
         ak_logger.warning("swag enrollment: could not queue a directory sync", error=str(e))
     return False

@@ -25,8 +25,12 @@ if not UserLDAPSourceConnection.objects.filter(source=source, user=user).exists(
 
 user.delete()
 print(f"user {name}: Authentik side deleted")
-ldap_sync.send(str(source.pk))
+# Authentik skips a sync while another is running, and that one may have
+# read the directory before this user was gone from Authentik; the delayed
+# ones run after it.
+for delay in (None, 30_000, 120_000):
+    ldap_sync.send_with_options(args=(str(source.pk),), delay=delay)
 print(
-    f"sync queued: {name} comes back from the directory within a minute, with the same ID "
+    f"sync queued: {name} comes back from the directory within a few minutes, with the same ID "
     "and password, and sets up MFA again at the next login"
 )

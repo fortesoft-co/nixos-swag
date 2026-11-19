@@ -255,7 +255,9 @@ services.swag.directory.users.alice.groups = [ "members" ];  # existing users
   in username, name, email and password. The form checks the username and
   email are free before anything is written. The account lands in the
   directory in `members` plus the invitation's groups, and syncs into
-  Authentik within seconds.
+  Authentik within seconds, or within a few minutes if another sync was
+  running at that moment (Authentik skips a sync while one runs, so the
+  sign-up queues two later ones as well).
 - **Who can log in.** Only members of `accessGroup` (default `members`).
   Everyone else is told their account is waiting for approval; superusers
   are exempt. Put your existing users in it before turning this on.
@@ -386,7 +388,7 @@ nix flake check
 | `directory` | Users, groups and initial passwords are provisioned; group members are published by directory ID; secrets are readable only by the unit that needs them; a password the user changed survives re-provisioning; provisioning is idempotent |
 | `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; deleting a directory user through nginx is refused with a reason while local users can be deleted, and the reset command rebuilds one with the same ID; directory users carry the directory's ID, OIDC clients send it, local users keep Authentik's, the subject map pairs old and new IDs, and the ID survives the user being re-created; a user deleted in lldap is removed from Authentik, a superuser is not; more removals than the limit apply none; no secret on a command line |
 | `authentik-oidc` | OIDC clients get the declared IDs, redirect URIs, grants, group bindings and secrets; discovery is served; no secret in the store or the process table |
-| `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; a name an app still holds is taken; the enrollment socket is closed to other users; no password on a command line or in the journal |
+| `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in, even when a sync was already running; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; a name an app still holds is taken; the enrollment socket is closed to other users; no password on a command line or in the journal |
 | `authentik-public` | The public name resolves locally; the admin interface is refused through the tunnel only; the local name redirects; logins without a second factor are sent to enrollment |
 
 Each check boots a NixOS VM, so you need KVM.

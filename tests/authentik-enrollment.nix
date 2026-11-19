@@ -48,6 +48,33 @@ let
     print(json.dumps(ch))
   '';
 
+  # Holds the directory source's sync lock, as a sync already running would,
+  # until a sync queued meanwhile has come and gone: Authentik skips it.
+  holdSyncLock = pkgs.writeText "hold-sync-lock.py" ''
+    import time
+    from django.utils import timezone
+    from authentik.sources.ldap.models import LDAPSource
+    from authentik.tasks.models import Task
+    source = LDAPSource.objects.get(slug="directory")
+    for _ in range(600):
+        with source.sync_lock as held:
+            if held:
+                since = timezone.now()
+                print("SYNC LOCK HELD", flush=True)
+                for _ in range(900):
+                    if Task.objects.filter(
+                        actor_name="authentik.sources.ldap.tasks.ldap_sync",
+                        state="done",
+                        mtime__gt=since,
+                    ).exists():
+                        print("SYNC SKIPPED", flush=True)
+                        break
+                    time.sleep(0.1)
+                print("SYNC LOCK RELEASED", flush=True)
+                break
+        time.sleep(0.1)
+  '';
+
   # Talks to the enrollment socket directly, as the flow's policies do.
   socketClient = pkgs.writeText "enroll-client.py" ''
     import json, socket, sys
@@ -214,6 +241,13 @@ pkgs.testers.runNixOSTest {
 
     with subtest("an invitation creates the account in the directory, with its groups"):
         token = invite("bob-invite-3", ["git-users"])
+        # As if a sync were running when bob signs up: the one his sign-up
+        # queues is skipped, and a later one has to bring him in.
+        machine.succeed("sed 's/--pty/--wait --pipe/' $(command -v ak) > /tmp/ak-pipe && chmod +x /tmp/ak-pipe")
+        machine.succeed(
+            "/tmp/ak-pipe shell -c 'exec(open(\"${holdSyncLock}\").read())' >/tmp/hold.log 2>&1 </dev/null &"
+        )
+        machine.wait_until_succeeds("grep -q 'SYNC LOCK HELD' /tmp/hold.log", timeout=120)
         ch = run_flow("enroll", "swag-enrollment", token, "bob", "Bob", "bob@example.com", bob_pw)
         assert ch["component"] == "ak-stage-prompt", ch
         assert "ready" in json.dumps(ch["fields"]), ch
@@ -225,9 +259,11 @@ pkgs.testers.runNixOSTest {
         assert ch["component"] == "ak-stage-access-denied", ch
 
     with subtest("the account syncs into Authentik and can log in"):
+        machine.wait_until_succeeds("grep -q 'SYNC LOCK RELEASED' /tmp/hold.log", timeout=120)
+        machine.succeed("grep -q 'SYNC SKIPPED' /tmp/hold.log")
         machine.wait_until_succeeds(
             f"curl -sf {auth} '{api}/core/users/?username=bob' | jq -e '.results | length == 1'",
-            timeout=120,
+            timeout=180,
         )
         machine.wait_until_succeeds(
             f"curl -sf {auth} '{api}/core/groups/?name=members&include_users=true'"
