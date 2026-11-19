@@ -263,6 +263,25 @@ pkgs.testers.runNixOSTest {
         assert json.loads(out)["ok"] is False, out
         machine.fail(f"ldapwhoami {ldap} -D uid=carol,ou=people,{base_dn} -w carol-password-12")
 
+    with subtest("a name an app still holds is taken; a write in progress is not read"):
+        machine.succeed("printf 'Heldname\\n' > /run/swag-directory/held-names/someapp")
+        machine.succeed("printf 'dotname\\n' > /run/swag-directory/held-names/.someapp.tmp")
+
+        def check(username):
+            return json.loads(machine.succeed(
+                "echo '{\"action\": \"check\", \"username\": \"" + username + "\", \"name\": \"X\","
+                " \"email\": \"" + username + "@example.com\", \"password\": \"long-enough-pw-1\","
+                " \"groups\": []}'"
+                " | systemd-run --wait --pipe --quiet -p DynamicUser=yes"
+                " -p SupplementaryGroups=swag-directory-enroll-clients"
+                " ${pkgs.python3}/bin/python3 -I ${socketClient}"
+            ))
+
+        held = check("heldname")
+        assert held == {"ok": False, "error": "That username is taken."}, held
+        assert check("dotname")["ok"] is True
+        machine.succeed("rm /run/swag-directory/held-names/someapp /run/swag-directory/held-names/.someapp.tmp")
+
     with subtest("no password appears on a command line or in the journal"):
         machine.fail(f"ps -eo args | grep -F -e {bob_pw} -e admin-password-1 | grep -v grep")
         machine.fail(f"journalctl -b --no-pager | grep -F -e {bob_pw} -e eve-chosen-password-1")

@@ -270,9 +270,17 @@ services.swag.directory.users.alice.groups = [ "members" ];  # existing users
   that keep their own copy of the account keep it, with its data, until you
   delete it there, but no longer let them sign in.
 - **Locking someone out, keeping the account.** Deactivate them in
-  Authentik. Don't delete them only in Authentik: the directory still has
-  them, so the next sync brings them back, without their MFA devices
-  (they set one up again at their next login).
+  Authentik. Deleting a directory user in Authentik's admin UI is refused
+  (behind swag web), with a message saying so: the directory still has
+  them, and the sync would bring them back without their MFA devices.
+  Users that don't come from the directory can still be deleted there.
+- **Rebuilding someone's Authentik side.** `swag-authentik-reset-user
+  <name>` on the host deletes it on purpose and resyncs: same directory
+  ID and password, so apps still know them; they set up MFA again.
+- **Names stay taken while an app holds them.** Apps list the usernames
+  they still have accounts under in `enrollment.heldNamesDir`, one file per
+  app; sign-up refuses those names, so a newcomer can't inherit someone's
+  old account. Deleting the old account in the app frees the name.
 - **Safe by construction.** The directory creates accounts through a local
   socket that only the Authentik server can open. It holds the lldap admin
   password as a systemd credential, refuses any group not in
@@ -292,6 +300,11 @@ directory, that ID is the directory account's own (`entryUUID`,
   it the previous owner's account.
 - **Local users keep Authentik's ID.** akadmin and other users that don't
   come from the directory get Authentik's own hashed ID, as before.
+
+Group membership reaches apps the same way: `services.swag.directory.groupMembers`
+holds one file per group, `<directory ID> <username>` per member, refreshed
+after provisioning and every 10 minutes. An app-side module can block sign-in
+for people who left a group without speaking LDAP.
 
 Apps that already know people by Authentik's hashed ID (a directory added
 after the fact, or an existing install) learn the new one from
@@ -370,10 +383,10 @@ nix flake check
 
 | Check | What it proves |
 |---|---|
-| `directory` | Users, groups and initial passwords are provisioned; secrets are readable only by the unit that needs them; a password the user changed survives re-provisioning; provisioning is idempotent |
-| `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; directory users carry the directory's ID, OIDC clients send it, local users keep Authentik's, the subject map pairs old and new IDs, and the ID survives the user being re-created; a user deleted in lldap is removed from Authentik, a superuser is not; more removals than the limit apply none; no secret on a command line |
+| `directory` | Users, groups and initial passwords are provisioned; group members are published by directory ID; secrets are readable only by the unit that needs them; a password the user changed survives re-provisioning; provisioning is idempotent |
+| `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; deleting a directory user through nginx is refused with a reason while local users can be deleted, and the reset command rebuilds one with the same ID; directory users carry the directory's ID, OIDC clients send it, local users keep Authentik's, the subject map pairs old and new IDs, and the ID survives the user being re-created; a user deleted in lldap is removed from Authentik, a superuser is not; more removals than the limit apply none; no secret on a command line |
 | `authentik-oidc` | OIDC clients get the declared IDs, redirect URIs, grants, group bindings and secrets; discovery is served; no secret in the store or the process table |
-| `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; the enrollment socket is closed to other users; no password on a command line or in the journal |
+| `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; a name an app still holds is taken; the enrollment socket is closed to other users; no password on a command line or in the journal |
 | `authentik-public` | The public name resolves locally; the admin interface is refused through the tunnel only; the local name redirects; logins without a second factor are sent to enrollment |
 
 Each check boots a NixOS VM, so you need KVM.

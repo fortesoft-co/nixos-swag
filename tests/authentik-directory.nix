@@ -10,8 +10,12 @@ pkgs.testers.runNixOSTest {
     {
       imports = [
         self.nixosModules.directory
+        self.nixosModules.web
         self.nixosModules.authentik
       ];
+
+      # nginx in front, for the delete guard.
+      services.swag.web.enable = true;
 
       virtualisation.memorySize = 6144;
       virtualisation.cores = 4;
@@ -79,6 +83,7 @@ pkgs.testers.runNixOSTest {
           removeDeletedUsers.maxPerRun = 1;
         };
         url = "http://127.0.0.1:9000";
+        dashboard.domain = "auth.example.com";
         # An OIDC client, to check the subject mode it gets.
         oidcClients.app = {
           name = "App";
@@ -194,6 +199,38 @@ pkgs.testers.runNixOSTest {
         recreated = get("/core/users/?username=alice")["results"][0]
         assert recreated["pk"] != alice["pk"], "alice was not re-created"
         alice = recreated
+
+    front = "--resolve auth.example.com:80:127.0.0.1 http://auth.example.com/api/v3"
+
+    with subtest("deleting a directory user through the admin UI is refused, with a reason"):
+        out = machine.succeed(f"curl -s {auth} -o /tmp/body -w '%{{http_code}}' -X DELETE {front}/core/users/{alice['pk']}/")
+        assert out == "403", out
+        body = json.loads(machine.succeed("cat /tmp/body"))
+        assert "comes from the directory" in body["detail"], body
+        assert len(get("/core/users/?username=alice")["results"]) == 1, "alice was deleted"
+        # Reads and edits on the same path still go through.
+        machine.succeed(f"curl -sf {auth} {front}/core/users/{alice['pk']}/ | jq -e '.username == \"alice\"'")
+
+    with subtest("a user that isn't from the directory can still be deleted"):
+        pk = json.loads(machine.succeed(
+            f"curl -sf {auth} -X POST -H 'Content-Type: application/json'"
+            " -d '{\"username\": \"local-only\", \"name\": \"Local\"}'"
+            f" '{api}/core/users/'"
+        ))["pk"]
+        out = machine.succeed(f"curl -s {auth} -o /dev/null -w '%{{http_code}}' -X DELETE {front}/core/users/{pk}/")
+        assert out == "204", out
+
+    with subtest("the reset command rebuilds a directory user's Authentik side, same ID"):
+        out = machine.succeed("swag-authentik-reset-user --yes alice")
+        assert "Authentik side deleted" in out, out
+        machine.wait_until_succeeds(
+            f"curl -sf {auth} '{api}/core/users/?username=alice' | jq -e '.results[0].attributes.upn == \"{uuid}\"'",
+            timeout=120,
+        )
+        again = get("/core/users/?username=alice")["results"][0]
+        assert again["pk"] != alice["pk"], "alice was not re-created"
+        alice = again
+        machine.fail("swag-authentik-reset-user --yes akadmin")
 
     with subtest("a password set in Authentik is written back to the directory"):
         machine.succeed(

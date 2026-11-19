@@ -225,7 +225,7 @@ let
     host = "127.0.0.1";
     port = 9000;
     scheme = "http";
-    extraLocations = {
+    extraLocations = deleteGuardLocations // {
       "/ws/" = {
         proxyPass = "http://127.0.0.1:9000";
         proxyWebsockets = true;
@@ -235,6 +235,42 @@ let
         alias = "${config.services.authentik.authentikComponents.frontend}/";
         extraConfig = "expires max; access_log off;";
       };
+    };
+  };
+
+  # Delete guard (directory source on): a DELETE of a user that came from
+  # the directory is refused with a message the admin UI shows; the
+  # directory decides who exists (remove people there, deactivate them here,
+  # or swag-authentik-reset-user to rebuild their Authentik side). nginx asks
+  # swag-authentik-delete-check first; other methods on the path pass at
+  # once. Not a security boundary: the API port and `ak shell` on the host
+  # skip nginx. It catches the admin-UI click.
+  deleteCheckSocket = "/run/swag-authentik/delete-check.sock";
+  deleteGuardLocations = optionalAttrs ds.enable {
+    "~ ^/api/v3/core/users/[0-9]+/$" = {
+      proxyPass = "http://127.0.0.1:9000";
+      recommendedProxySettings = true;
+      extraConfig = ''
+        auth_request /_swag/user-delete-check;
+        error_page 403 = @swag_user_delete_refused;
+      '';
+    };
+    "= /_swag/user-delete-check" = {
+      extraConfig = ''
+        internal;
+        proxy_pass http://unix:${deleteCheckSocket}:/;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-Method $request_method;
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_read_timeout 60s;
+      '';
+    };
+    "@swag_user_delete_refused" = {
+      extraConfig = ''
+        default_type application/json;
+        return 403 '{"detail": "This user comes from the directory. Remove them there (lldap) and they leave Authentik too; to lock them out, deactivate them here; to rebuild their Authentik side, run swag-authentik-reset-user on the host."}';
+      '';
     };
   };
 
@@ -810,6 +846,39 @@ print(f"source {slug}: sync queued")
       --working-directory /var/lib/authentik \
       -- ${managePy} shell -c 'exec(open("${./directory-prune.py}").read())' \
       2>&1 | ${pkgs.coreutils}/bin/cat
+  '';
+
+  # The delete check's instances run as the Authentik server does: its
+  # serviceConfig, minus what makes it the server.
+  akServiceProperties = removeAttrs config.systemd.services.authentik.serviceConfig [
+    "ExecStart"
+    "ExecStartPre"
+    "Restart"
+    "RestartSec"
+    "WorkingDirectory"
+  ];
+
+  resetUser = pkgs.writeShellScriptBin "swag-authentik-reset-user" ''
+    set -euo pipefail
+    usage() { echo "usage: swag-authentik-reset-user [--yes] <username>" >&2; exit 2; }
+    yes=
+    if [ "''${1:-}" = --yes ]; then yes=1; shift; fi
+    [ $# -eq 1 ] || usage
+    name=$1
+    [[ $name =~ ^[A-Za-z0-9._@-]{1,150}$ ]] || { echo "not a username: $name" >&2; exit 2; }
+    [ "$(${pkgs.coreutils}/bin/id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
+    if [ -z "$yes" ]; then
+      echo "This deletes $name's Authentik side (MFA devices, sessions, consents, tokens);"
+      echo "the directory sync brings them back with the same ID and password."
+      read -r -p "Type the username again to go ahead: " again
+      [ "$again" = "$name" ] || { echo "not confirmed; nothing changed"; exit 1; }
+    fi
+    exec ${config.systemd.package}/bin/systemd-run --wait --pipe --collect --quiet \
+      ${concatStringsSep " \\\n      " akOptions} \
+      --setenv SOURCE_SLUG="${ds.slug}" \
+      --setenv RESET_USER="$name" \
+      --working-directory /var/lib/authentik \
+      -- ${managePy} shell -c 'exec(open("${./reset-user.py}").read())'
   '';
 
   # Non-secret env = caller env + the bootstrap email (AUTHENTIK_BOOTSTRAP_EMAIL),
@@ -1407,6 +1476,35 @@ in
         timerConfig = {
           OnBootSec = "10min";
           OnUnitInactiveSec = "10min";
+        };
+      };
+    })
+
+    # ── Directory source: delete guard and reset command ────────────────────
+    (mkIf ds.enable { environment.systemPackages = [ resetUser ]; })
+    (mkIf (ds.enable && hasLocalweb) {
+      systemd.sockets.swag-authentik-delete-check = {
+        description = "Authentik user-deletion check for nginx";
+        wantedBy = [ "sockets.target" ];
+        socketConfig = {
+          ListenStream = deleteCheckSocket;
+          SocketUser = "root";
+          SocketGroup = config.services.nginx.group;
+          SocketMode = "0660";
+          Accept = true;
+          MaxConnections = 8;
+        };
+      };
+      systemd.services."swag-authentik-delete-check@" = {
+        description = "Check an Authentik user deletion";
+        after = [ "authentik.service" ];
+        serviceConfig = akServiceProperties // {
+          ExecStart = "${pkgs.python3}/bin/python3 -I ${./delete-check.py} ${managePy} ${./delete-check-query.py} ${ds.slug}";
+          WorkingDirectory = "/var/lib/authentik";
+          StandardInput = "socket";
+          StandardOutput = "socket";
+          StandardError = "journal";
+          RuntimeMaxSec = "60s";
         };
       };
     })

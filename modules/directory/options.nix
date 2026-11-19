@@ -82,11 +82,40 @@ in
         '';
       };
 
+      heldNamesDir = mkOption {
+        type = types.str;
+        default = "/run/swag-directory/held-names";
+        readOnly = true;
+        description = ''
+          Directory where apps list the usernames they still have accounts
+          under, one file per app, one name per line (files starting with
+          a dot are skipped as writes in progress). Enrollment refuses those
+          names as taken: a name is free only once every app has let go of
+          it, so a newcomer can't inherit someone's old account. Freeing a
+          name is an admin step: delete the old account in the app.
+        '';
+      };
+
       minPasswordLength = mkOption {
         type = types.ints.between 8 128;
         default = 12;
         description = "Shortest password a new account may have.";
       };
+    };
+
+    groupMembers = mkOption {
+      type = types.str;
+      default = "/run/swag-directory/groups";
+      readOnly = true;
+      description = ''
+        Directory with one file per declared group, one member per line:
+        "<directory ID> <username>", the directory ID being the account's
+        uuid (LDAP entryUUID, what Authentik sends apps as the user's ID).
+        Written by swag-directory-groups.service after provisioning and
+        every 10 minutes, each file replaced only when it changed. For
+        app-side modules that act on membership, e.g. blocking sign-in for
+        people who left a group. Mode 0644; usernames and IDs only.
+      '';
     };
 
     ldap = {

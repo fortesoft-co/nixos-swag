@@ -78,5 +78,18 @@ pkgs.testers.runNixOSTest {
     with subtest("provisioning is idempotent"):
         out = machine.succeed("systemctl restart swag-directory-provision.service && journalctl -u swag-directory-provision -n 20 -o cat")
         assert "created" not in out.split("Starting")[-1], out
+
+    with subtest("group members are published by directory ID, one file per group"):
+        machine.succeed("systemctl start swag-directory-groups.service")
+        uuid = machine.succeed(
+            f"ldapsearch {ldap} {admin} -b ou=people,dc=example,dc=com -LLL '(uid=alice)' entryUUID"
+            " | sed -n 's/^entryUUID: //Ip'"
+        ).strip()
+        assert uuid, "no entryUUID for alice"
+        published = machine.succeed("cat /run/swag-directory/groups/family").strip()
+        assert published == f"{uuid} alice", f"published {published!r}, LDAP says {uuid!r}"
+        assert machine.succeed("stat -c %a /run/swag-directory/groups/family").strip() == "644"
+        assert machine.succeed("ls -A /run/swag-directory/groups").split() == ["family"]
+        machine.fail("su mallory -c 'touch /run/swag-directory/groups/family'")
   '';
 }

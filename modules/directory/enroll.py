@@ -16,6 +16,10 @@ Request, one JSON line:
 "create" does the same, then creates the user, sets the password and adds
 the groups. Only groups listed in grantableGroups can be given.
 
+A username is also taken while any app still holds it: every file in
+heldNamesDir lists names (one per line) that an app has an account under
+(apps publish them; see services.swag.directory.enrollment.heldNamesDir).
+
 Reply, one JSON line: {"ok": true} or {"ok": false, "error": "<for the user>"}.
 
 Logs go to stderr (the journal) and never contain the password.
@@ -96,6 +100,22 @@ def validate(req):
     return action, username, name.strip(), email, password, sorted(set(groups))
 
 
+def held_names():
+    """Names apps still hold, lowercased; dotfiles are writes in progress."""
+    names = set()
+    try:
+        entries = os.listdir(cfg["heldNamesDir"])
+    except FileNotFoundError:
+        return names
+    for entry in entries:
+        path = os.path.join(cfg["heldNamesDir"], entry)
+        if entry.startswith(".") or not os.path.isfile(path):
+            continue
+        with open(path) as f:
+            names.update(line.strip().lower() for line in f if line.strip())
+    return names
+
+
 def main():
     try:
         action, username, name, email, password, groups = validate(read_request())
@@ -108,7 +128,7 @@ def main():
         ld = Lldap(cfg, f.read().rstrip("\n"))
     try:
         state = ld.gql("{ users { id email } groups { id displayName } }")
-        if any(u["id"].lower() == username for u in state["users"]):
+        if any(u["id"].lower() == username for u in state["users"]) or username in held_names():
             reply(False, "That username is taken.")
             return
         if any(u["email"].lower() == email.lower() for u in state["users"]):

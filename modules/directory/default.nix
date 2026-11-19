@@ -65,6 +65,7 @@ let
     cp ${./lldap.py} $out/lldap.py
     cp ${./provision.py} $out/provision.py
     cp ${./enroll.py} $out/enroll.py
+    cp ${./groups.py} $out/groups.py
   '';
   # -E -s: no PYTHON* environment, no user site; unlike -I, keeps the
   # script's directory on sys.path for lldap.py.
@@ -94,7 +95,7 @@ let
 
   en = cfg.enrollment;
   enrollConfig = pkgs.writeText "swag-directory-enroll.json" (
-    builtins.toJSON (lldapClientConfig // { inherit (en) grantableGroups minPasswordLength; })
+    builtins.toJSON (lldapClientConfig // { inherit (en) grantableGroups minPasswordLength heldNamesDir; })
   );
 
   # The units that hold the lldap admin password: no identity of their own,
@@ -116,6 +117,37 @@ let
     UMask = "0077";
   };
 
+  groupsConfig = pkgs.writeText "swag-directory-groups.json" (
+    builtins.toJSON (lldapClientConfig // { groups = attrNames cfg.groups; })
+  );
+  # Splits groups.py's output into one file per group, replacing a file
+  # only when it changed (so watchers fire on real changes). Runs as root
+  # after the sandboxed script, which can't write there.
+  groupsOut = "${dirOf cfg.groupMembers}/.groups.out";
+  publishGroups = pkgs.writeShellScript "swag-directory-groups-publish" ''
+    set -eu
+    dir=${cfg.groupMembers}
+    for g in ${escapeShellArgs (attrNames cfg.groups)}; do
+      : > "$dir/.$g.new"
+    done
+    while read -r kind group id name; do
+      case "$kind" in
+        GROUP) [ -e "$dir/.$group.new" ] && printf '%s %s\n' "$id" "$name" >> "$dir/.$group.new" ;;
+      esac
+    done < ${groupsOut}
+    for g in ${escapeShellArgs (attrNames cfg.groups)}; do
+      ${pkgs.coreutils}/bin/sort -o "$dir/.$g.new" "$dir/.$g.new"
+      if ${pkgs.diffutils}/bin/cmp -s "$dir/.$g.new" "$dir/$g"; then
+        rm "$dir/.$g.new"
+      else
+        chmod 0644 "$dir/.$g.new"
+        mv "$dir/.$g.new" "$dir/$g"
+        echo "group $g: $(${pkgs.coreutils}/bin/wc -l < "$dir/$g") members published" >&2
+      fi
+    done
+    rm -f ${groupsOut}
+  '';
+
   builtinGroups = [
     "lldap_admin"
     "lldap_password_manager"
@@ -134,6 +166,10 @@ in
         {
           assertion = all (u: u.initialPasswordFile == null || u.passwordFile == null) (attrValues cfg.users);
           message = "services.swag.directory.users: set initialPasswordFile or passwordFile on a user, not both.";
+        }
+        {
+          assertion = all (g: builtins.match "[A-Za-z0-9_][A-Za-z0-9._-]*" g != null) (attrNames cfg.groups);
+          message = "services.swag.directory.groups: names may use letters, digits, '.', '_' and '-', and not start with '.' or '-' (each becomes a file under groupMembers).";
         }
         {
           assertion = unknownGroups == [ ];
@@ -165,6 +201,40 @@ in
         "admin-password:${cfg.adminPasswordFile}"
       ]
       ++ optional (cfg.jwtSecretFile != null) "jwt-secret:${cfg.jwtSecretFile}";
+
+      systemd.tmpfiles.rules = [
+        "d ${dirOf cfg.groupMembers} 0755 root root -"
+        "d ${cfg.groupMembers} 0755 root root -"
+        "d ${en.heldNamesDir} 0755 root root -"
+      ];
+
+      # Group members for apps (groupMembers): after every provisioning run
+      # and every 10 minutes, so changes made in lldap's UI arrive too.
+      systemd.services.swag-directory-groups = {
+        description = "Publish directory group members for apps";
+        after = [ "lldap.service" "swag-directory-provision.service" ];
+        requires = [ "lldap.service" ];
+        wantedBy = [ "swag-directory-provision.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${python} ${scripts}/groups.py ${groupsConfig}";
+          # Opened by systemd as root, before the sandbox applies. append, not
+          # truncate: the setting applies to ExecStartPost too, which would
+          # empty the file before reading it; ExecStartPre clears it instead.
+          ExecStartPre = "+${pkgs.coreutils}/bin/rm -f ${groupsOut}";
+          StandardOutput = "append:${groupsOut}";
+          ExecStartPost = "+${publishGroups}";
+          LoadCredential = [ "admin-password:${cfg.adminPasswordFile}" ];
+        }
+        // adminUnitHardening;
+      };
+      systemd.timers.swag-directory-groups = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "5min";
+          OnUnitInactiveSec = "10min";
+        };
+      };
 
       systemd.services.swag-directory-provision = {
         description = "Provision declared users and groups into lldap";
