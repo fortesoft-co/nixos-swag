@@ -30,6 +30,7 @@
 with lib;
 let
   cfg = config.services.swag.authentik;
+  state = import ../../lib/state.nix { inherit lib pkgs; };
 
   settingsFormat = pkgs.formats.yaml { };
 
@@ -1067,7 +1068,10 @@ print(f"source {slug}: sync queued")
     '';
 in
 {
-  imports = [ ./options.nix ];
+  imports = [
+    ./options.nix
+    ../../lib/state-option.nix
+  ];
 
   config = mkIf cfg.enable (mkMerge [
     {
@@ -1337,72 +1341,31 @@ in
     })
 
     # ── State relocation (bind mount) ──────────────────────────────────────
-    # ── State relocation (bind mount) ────────────────────────
-    # Upstream uses StateDirectory=authentik + DynamicUser=true. That is
-    # INCOMPATIBLE with a bind mount at /var/lib/authentik: with DynamicUser,
-    # systemd renames /var/lib/authentik → /var/lib/private/authentik (private
-    # namespace) and you can't rename a mount point (EBUSY). So when relocating,
-    # we disable DynamicUser and use a real `authentik` system user (stable
-    # uid/gid) so StateDirectory stays public (/var/lib/authentik, no private
-    # migration) and the bind mount provides the storage. The state-dir oneshot
-    # creates + chowns the source to the authentik user so the service can write
-    # through the mount. Slightly less isolation than upstream's DynamicUser,
-    # but the only way to persist authentik media on an external drive. The
-    # authentik DB (the important state) lives in postgres regardless.
-    #
-    # NB: leaving stateDir at the default /var/lib/authentik skips all of this
-    # and keeps upstream's DynamicUser intact (media on the root fs).
-    (mkIf (cfg.stateDir != "/var/lib/authentik") {
-      users.users.authentik = {
-        isSystemUser = true;
-        group = "authentik";
-      };
-      users.groups.authentik = { };
-
-      fileSystems."/var/lib/authentik" = {
-        device = cfg.stateDir;
-        fsType = "none";
-        options = [
-          "bind"
-          "x-systemd.requires=authentik-state-dir.service"
-          "x-systemd.after=authentik-state-dir.service"
-        ];
-        depends = [ (dirOf cfg.stateDir) ];
-      };
-      systemd.services.authentik-state-dir = {
-        description = "Create + chown authentik state source directory for the bind mount";
-        path = [ pkgs.coreutils ];
-        # Run in the local-fs phase so the bind mount that Requires this unit
-        # doesn't cycle back through sysinit. A plain service's DefaultDependencies
-        # add After=sysinit.target, which would cycle:
-        #   local-fs.target → var-lib-authentik.mount → this → sysinit.target → local-fs.target
-        # DefaultDependencies=no drops that implicit edge; RequiresMountsFor orders
-        # us after the parent mount (/Volumes/Server); Before=local-fs.target keeps
-        # us in the local-fs phase. /etc/passwd lives on the root fs (mounted in the
-        # initrd) and is written by systemd-sysusers before local-fs.target, so the
-        # chown by name resolves the authentik user here.
-        before = [ "local-fs.target" ];
-        unitConfig = {
-          DefaultDependencies = false;
-          RequiresMountsFor = [ (dirOf cfg.stateDir) ];
+    # Upstream uses StateDirectory=authentik + DynamicUser=true, which can't
+    # sit on a bind mount (systemd would move it to /var/lib/private), so a
+    # relocated Authentik runs as a static authentik user. Slightly less
+    # isolation than upstream's DynamicUser. Leaving stateDir at the default
+    # keeps upstream's DynamicUser (media on the root fs).
+    (mkIf (cfg.stateDir != "/var/lib/authentik") (mkMerge [
+      (state.relocate {
+        name = "authentik";
+        source = cfg.stateDir;
+        target = "/var/lib/authentik";
+        owner = "authentik:authentik";
+        oldPaths = [ "/var/lib/authentik" "/var/lib/private/authentik" ];
+      })
+      {
+        users.users.authentik = {
+          isSystemUser = true;
+          group = "authentik";
         };
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-        script = ''
-          mkdir -p ${cfg.stateDir}
-          chown -R authentik:authentik ${cfg.stateDir}
-        '';
-      };
-
-      # Disable DynamicUser on all three authentik units so they run as the real
-      # authentik user (stable uid) and StateDirectory stays public, letting the
-      # bind mount provide the storage without the EBUSY private-namespace move.
-      systemd.services.authentik.serviceConfig.DynamicUser = mkForce false;
-      systemd.services.authentik-worker.serviceConfig.DynamicUser = mkForce false;
-      systemd.services.authentik-migrate.serviceConfig.DynamicUser = mkForce false;
-    })
+        users.groups.authentik = { };
+        systemd.services = genAttrs [ "authentik" "authentik-worker" "authentik-migrate" ] (_: {
+          serviceConfig.DynamicUser = mkForce false;
+          unitConfig.RequiresMountsFor = [ "/var/lib/authentik" ];
+        });
+      }
+    ]))
 
     # ── Admin UI: local subdomain vhost via swag web ───────────────
     (optionalAttrs webDeclared (mkIf (hasLocalweb && effectiveDomain != null) {

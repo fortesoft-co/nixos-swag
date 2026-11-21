@@ -1,4 +1,5 @@
 {
+  config,
   lib,
   ...
 }:
@@ -43,6 +44,25 @@ in
         Runtime path to a file holding lldap's JWT signing secret, readable
         by root. null = lldap generates one on first start and keeps it in
         its own state directory (readable only by the lldap user).
+      '';
+    };
+
+    stateDir = mkOption {
+      type = types.str;
+      default =
+        if config.services.swag.stateDir != null then
+          "${config.services.swag.stateDir}/lldap"
+        else
+          "/var/lib/lldap";
+      defaultText = literalExpression ''"''${services.swag.stateDir}/lldap", or "/var/lib/lldap" when that is null'';
+      description = ''
+        Where lldap's database lives: the directory itself, every user's ID
+        included. Losing it means new IDs for everyone, and apps that know
+        people by ID see strangers. Anything but /var/lib/lldap is
+        bind-mounted there, with a static lldap user instead of nixpkgs'
+        DynamicUser; data already in /var/lib/private/lldap (or
+        /var/lib/lldap) is copied over once, the original left in place.
+        The parent must be mounted by the host.
       '';
     };
 

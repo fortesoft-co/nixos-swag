@@ -191,7 +191,7 @@ let
           description = ''
             Settings for the unit the run and the adapter share: the user
             that can reach the app, credentials (LoadCredential), writable
-            paths. Defaults to a dynamic user with a hardened sandbox.
+            paths. Defaults to the swag-accounts system user and a hardened sandbox.
           '';
         };
 

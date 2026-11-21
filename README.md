@@ -444,6 +444,28 @@ What you end up with:
 
 Turn on `mfa.enforce` before going public.
 
+## Keeping state
+
+```nix
+services.swag.stateDir = "/srv/swag";  # e.g. on a backed-up drive
+```
+
+Everything the stack has to remember then lives under one path: `lldap/`
+(the directory, every user's ID included), `accounts/` (which blocks are
+swag's own) and `authentik/` (media; Authentik's database is in Postgres,
+see `authentik.database`). Each is bind-mounted at the service's usual
+`/var/lib` path, so a reinstalled host with the same config and that path
+comes back with the same people and IDs, and no app sees strangers. The
+parent must be mounted by the host; `directory.stateDir` and
+`authentik.stateDir` override one each.
+
+Turning it on for a running host is one switch: the old data is copied
+once into the empty new folder (finished or not at all), the original left
+in place for you to delete when you're happy. lldap and Authentik then run
+as static system users instead of DynamicUser, since a DynamicUser's state
+can't sit on a bind mount. Stop anything that writes to these folders
+while you back them up (lldap's database is SQLite).
+
 ## Tests
 
 ```sh
@@ -454,6 +476,7 @@ nix flake check
 |---|---|
 | `directory` | Users, groups and initial passwords are provisioned; group members are published by directory ID; secrets are readable only by the unit that needs them; a password the user changed survives re-provisioning; provisioning is idempotent |
 | `accounts` | People outside the group are blocked and their sessions revoked, and lifted when back, while an admin's block and local accounts are left alone; an account known by an old ID is linked, a link whose new ID is taken is refused; more blocks than the limit apply none; no members file or subject map changes nothing; a failed step still publishes held names; dry run changes nothing; an app that can't block is matched by name and has its sessions revoked once; the SQL adapter on sqlite3 and postgres |
+| `state` | Turning on `stateDir` for a running host copies lldap's and app accounts state once (DynamicUser's private folder included) and bind-mounts it back; every user keeps their ID; the originals stay; a later start copies nothing |
 | `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; deleting a directory user through nginx is refused with a reason while local users can be deleted, and the reset command rebuilds one with the same ID; directory users carry the directory's ID, OIDC clients send it, local users keep Authentik's, the subject map pairs old and new IDs, and the ID survives the user being re-created; a user deleted in lldap is removed from Authentik, a superuser is not; more removals than the limit apply none; no secret on a command line |
 | `authentik-oidc` | OIDC clients get the declared IDs, redirect URIs, grants, group bindings and secrets; discovery is served; no secret in the store or the process table |
 | `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in, even when a sync was already running; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; a name an app still holds is taken; the enrollment socket is closed to other users; no password on a command line or in the journal |

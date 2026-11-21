@@ -30,6 +30,7 @@
 with lib;
 let
   cfg = config.services.swag.directory;
+  state = import ../../lib/state.nix { inherit lib pkgs; };
 
   # Integration blocks are wrapped in optionalAttrs on the option's existence
   # (options never depend on config, so no recursion): a false mkIf still
@@ -158,7 +159,10 @@ let
   );
 in
 {
-  imports = [ ./options.nix ];
+  imports = [
+    ./options.nix
+    ../../lib/state-option.nix
+  ];
 
   config = mkIf cfg.enable (mkMerge [
     {
@@ -305,6 +309,35 @@ in
         // adminUnitHardening;
       };
     })
+
+    # The directory on a path of your choice (stateDir). nixpkgs' lldap uses
+    # DynamicUser, whose StateDirectory can't sit on a bind mount (systemd
+    # would move it to /var/lib/private), so a relocated lldap runs as a
+    # static lldap user. Copying the old data first matters here: an empty
+    # database would be provisioned afresh, with new IDs for everyone.
+    (mkIf (cfg.stateDir != "/var/lib/lldap") (mkMerge [
+      (state.relocate {
+        name = "lldap";
+        source = cfg.stateDir;
+        target = "/var/lib/lldap";
+        owner = "lldap:lldap";
+        oldPaths = [
+          "/var/lib/lldap"
+          "/var/lib/private/lldap"
+        ];
+      })
+      {
+        users.users.lldap = {
+          isSystemUser = true;
+          group = "lldap";
+        };
+        users.groups.lldap = { };
+        systemd.services.lldap = {
+          serviceConfig.DynamicUser = mkForce false;
+          unitConfig.RequiresMountsFor = [ "/var/lib/lldap" ];
+        };
+      }
+    ]))
 
     # Admin web UI on swag web.
     (optionalAttrs webDeclared (mkIf (hasWeb && dashboardDomain != null) {

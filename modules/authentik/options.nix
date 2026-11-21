@@ -1,4 +1,5 @@
 {
+  config,
   lib,
   ...
 }:
@@ -215,20 +216,19 @@ in
     # ── NixOS-only: service knobs ────────────────────────────────────────
     stateDir = mkOption {
       type = types.str;
-      default = "/var/lib/authentik";
+      default =
+        if config.services.swag.stateDir != null then
+          "${config.services.swag.stateDir}/authentik"
+        else
+          "/var/lib/authentik";
+      defaultText = literalExpression ''"''${services.swag.stateDir}/authentik", or "/var/lib/authentik" when that is null'';
       description = ''
-        On-disk location of authentik state (the database is separate — see
-        services.swag.authentik.database). Upstream uses systemd StateDirectory=authentik
-        with DynamicUser, which is kept intact; when this is not the default
-        /var/lib/authentik, the module adds a bind mount
-        /var/lib/authentik ← stateDir so the bytes physically live on the
-        configured path (e.g. /Volumes/Server/authentik) while upstream's
-        StateDirectory handling keeps working. Place this on a backup-covered
-        path to survive a reimage.
-
-        NB: the parent of stateDir must already be mounted (the bind mount
-        depends on it). For /Volumes/Server/authentik that means /Volumes/Server
-        — already mounted by the host's filesystems config.
+        Where Authentik's files live (media, certificates; its database is
+        separate, see services.swag.authentik.database). Anything but
+        /var/lib/authentik is bind-mounted there, with a static authentik
+        user instead of upstream's DynamicUser; data already in
+        /var/lib/authentik (or /var/lib/private/authentik) is copied over
+        once. The parent must be mounted by the host.
       '';
     };
 

@@ -219,7 +219,8 @@ pkgs.testers.runNixOSTest {
           adapter.command = "${mediaAdapter}";
           # The adapter keeps its "database" as root's file.
           serviceConfig = {
-            DynamicUser = false;
+            User = "root";
+            Group = "root";
             ReadWritePaths = [ "/var/lib/media" ];
           };
           after = [ "test-setup.service" ];

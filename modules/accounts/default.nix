@@ -29,6 +29,8 @@ let
   cfg = config.services.swag.accounts;
   hasDirectory = options.services ? swag.directory && config.services.swag.directory.enable;
   python = "${pkgs.python3}/bin/python3 -I";
+  state = import ../../lib/state.nix { inherit lib pkgs; };
+  swagState = config.services.swag.stateDir;
 
   stateDir = name: "/var/lib/swag-accounts/${name}";
 
@@ -116,14 +118,20 @@ let
         wants = app.after;
         # Path and timer triggers can come in bursts; every run is short
         # and idempotent.
-        unitConfig.StartLimitIntervalSec = 0;
+        unitConfig = {
+          StartLimitIntervalSec = 0;
+          RequiresMountsFor = [ "/var/lib/swag-accounts" ];
+        };
         serviceConfig = mkMerge [
           {
             Type = "oneshot";
             ExecStart = "${python} ${./reconcile.py} ${runConfig name app}";
             StateDirectory = "swag-accounts/${name}";
             StateDirectoryMode = "0700";
-            DynamicUser = mkDefault true;
+            # A static user, not DynamicUser: the state can then sit on
+            # services.swag.stateDir's bind mount.
+            User = mkDefault "swag-accounts";
+            Group = mkDefault "swag-accounts";
             PrivateTmp = mkDefault true;
             ProtectSystem = mkDefault "strict";
             ProtectHome = mkDefault true;
@@ -156,52 +164,75 @@ let
     };
 in
 {
-  imports = [ ./options.nix ];
+  imports = [
+    ./options.nix
+    ../../lib/state-option.nix
+  ];
 
-  config = mkIf (cfg != { }) {
-    assertions = concatLists (
-      mapAttrsToList (name: app: [
-        {
-          assertion = builtins.match "[A-Za-z0-9_-]+" name != null;
-          message = "services.swag.accounts.${name}: names may use letters, digits, '_' and '-' (each becomes a unit and a file name).";
-        }
-        {
-          assertion = (app.adapter.command != null) != (app.adapter.sql != null);
-          message = "services.swag.accounts.${name}: set exactly one of adapter.command and adapter.sql.";
-        }
-        {
-          assertion = app.accessGroup == null || app.membersFile != null;
-          message = "services.swag.accounts.${name}: accessGroup needs membersFile, which defaults to the directory's file only when services.swag.directory is enabled on this host.";
-        }
-        {
-          assertion =
-            app.accessGroup == null
-            || !hasDirectory
-            || config.services.swag.directory.groups ? ${app.accessGroup};
-          message = "services.swag.accounts.${name}: accessGroup ${toString app.accessGroup} is not declared in services.swag.directory.groups.";
-        }
-        {
-          assertion =
-            app.adapter.sql == null
-            || (
-              if app.adapter.sql.database.type == "sqlite3" then
-                app.adapter.sql.database.path != null
-              else
-                app.adapter.sql.database.user != null && app.adapter.sql.database.name != null
-            );
-          message = "services.swag.accounts.${name}: adapter.sql.database needs path (sqlite3), or user and name (postgres).";
-        }
-      ]) cfg
-    );
+  config = mkIf (cfg != { }) (mkMerge [
+    (mkIf (swagState != null) (
+      state.relocate {
+        name = "swag-accounts";
+        source = "${swagState}/accounts";
+        target = "/var/lib/swag-accounts";
+        # Each app's unit owns its own directory (StateDirectory=).
+        oldPaths = [
+          "/var/lib/swag-accounts"
+          "/var/lib/private/swag-accounts"
+        ];
+      }
+    ))
+    {
+      users.users.swag-accounts = {
+        isSystemUser = true;
+        group = "swag-accounts";
+      };
+      users.groups.swag-accounts = { };
 
-    warnings = concatLists (
-      mapAttrsToList (
-        name: app:
-        optional (app.accessGroup != null && app.dryRun)
-          "services.swag.accounts.${name} is in dryRun: it logs what it would block and changes nothing. Check `journalctl -u swag-accounts-${name}`, then set dryRun = false."
-      ) cfg
-    );
+      assertions = concatLists (
+        mapAttrsToList (name: app: [
+          {
+            assertion = builtins.match "[A-Za-z0-9_-]+" name != null;
+            message = "services.swag.accounts.${name}: names may use letters, digits, '_' and '-' (each becomes a unit and a file name).";
+          }
+          {
+            assertion = (app.adapter.command != null) != (app.adapter.sql != null);
+            message = "services.swag.accounts.${name}: set exactly one of adapter.command and adapter.sql.";
+          }
+          {
+            assertion = app.accessGroup == null || app.membersFile != null;
+            message = "services.swag.accounts.${name}: accessGroup needs membersFile, which defaults to the directory's file only when services.swag.directory is enabled on this host.";
+          }
+          {
+            assertion =
+              app.accessGroup == null
+              || !hasDirectory
+              || config.services.swag.directory.groups ? ${app.accessGroup};
+            message = "services.swag.accounts.${name}: accessGroup ${toString app.accessGroup} is not declared in services.swag.directory.groups.";
+          }
+          {
+            assertion =
+              app.adapter.sql == null
+              || (
+                if app.adapter.sql.database.type == "sqlite3" then
+                  app.adapter.sql.database.path != null
+                else
+                  app.adapter.sql.database.user != null && app.adapter.sql.database.name != null
+              );
+            message = "services.swag.accounts.${name}: adapter.sql.database needs path (sqlite3), or user and name (postgres).";
+          }
+        ]) cfg
+      );
 
-    systemd = mkMerge (mapAttrsToList appUnits cfg);
-  };
+      warnings = concatLists (
+        mapAttrsToList (
+          name: app:
+          optional (app.accessGroup != null && app.dryRun)
+            "services.swag.accounts.${name} is in dryRun: it logs what it would block and changes nothing. Check `journalctl -u swag-accounts-${name}`, then set dryRun = false."
+        ) cfg
+      );
+
+      systemd = mkMerge (mapAttrsToList appUnits cfg);
+    }
+  ]);
 }
