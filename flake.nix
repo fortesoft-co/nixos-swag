@@ -24,6 +24,7 @@
         dns = ./modules/dns;
         web = ./modules/web;
         directory = ./modules/directory;
+        accounts = ./modules/accounts;
         authentik = {
           imports = [
             ./modules/authentik
@@ -36,6 +37,7 @@
             self.nixosModules.web
             self.nixosModules.directory
             self.nixosModules.authentik
+            self.nixosModules.accounts
             nixos-cloudflared.nixosModules.default
           ];
         };
@@ -47,6 +49,7 @@
         in
         {
           directory = import ./tests/directory.nix { inherit pkgs self; };
+          accounts = import ./tests/accounts.nix { inherit pkgs self; };
           authentik-directory = import ./tests/authentik-directory.nix { inherit pkgs self; };
           authentik-oidc = import ./tests/authentik-oidc.nix { inherit pkgs self; };
           authentik-public = import ./tests/authentik-public.nix { inherit pkgs self; };

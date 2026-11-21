@@ -99,6 +99,7 @@ or a file you put there yourself.
 | `web` | `services.swag.web` | nginx vhost registry, ACME DNS-01 certificates, firewall | Admin UIs and forward-auth gates register themselves here |
 | `directory` | `services.swag.directory` | lldap with declarative users and groups, and an enrollment endpoint for new accounts | Admin UI on `ldap.<zone>`; Authentik's bind account is created for you |
 | `authentik` | `services.swag.authentik` | Authentik server, worker and outposts; OIDC clients, forward-auth apps, MFA, invitations, public login | Syncs from the directory, registers its vhosts, adds tunnel ingress |
+| `accounts` | `services.swag.accounts` | App-side accounts that follow the directory: blocks people who left a group, links old IDs, keeps held names | One unit per app; the app is reached through a small adapter |
 | `default` | all of the above | plus [nixos-cloudflared](https://github.com/fortesoft-co/nixos-cloudflared) for the tunnel (off until you enable it) | |
 
 ## Quick start
@@ -305,16 +306,82 @@ directory, that ID is the directory account's own (`entryUUID`,
 
 Group membership reaches apps the same way: `services.swag.directory.groupMembers`
 holds one file per group, `<directory ID> <username>` per member, refreshed
-after provisioning and every 10 minutes. An app-side module can block sign-in
-for people who left a group without speaking LDAP.
+after provisioning and every 10 minutes. [App accounts](#app-accounts) uses it
+to block sign-in for people who left a group, without speaking LDAP.
 
 Apps that already know people by Authentik's hashed ID (a directory added
 after the fact, or an existing install) learn the new one from
 `directorySource.subjectMap`: a file of `<old ID> <new ID>` lines, written
 from the directory before the sync switches anyone over and refreshed every
-10 minutes. An app-side module watches it and links each account to its new
-ID as well, keeping the old one, so nobody's sign-in breaks during the
-switch. swag knows nothing about the apps; the file is the whole contract.
+10 minutes. [App accounts](#app-accounts) watches it and links each account to
+its new ID as well, keeping the old one, so nobody's sign-in breaks during
+the switch. swag knows nothing about the apps; the file is the whole contract.
+
+## App accounts
+
+Authentik decides who can sign in, but most apps keep accounts of their own,
+and those have other ways in: API tokens, SSH keys, app passwords, open
+sessions. `services.swag.accounts` keeps them in line with the directory, one
+unit per app (`swag-accounts-<name>`), every 10 minutes and whenever group
+membership or the subject map changes:
+
+- **Left the group → blocked.** Accounts of people outside `accessGroup` are
+  blocked, never deleted, and their sessions revoked. When they're back the
+  block is lifted, but only blocks it set: one an admin set stays.
+- **Old IDs → linked.** An account known by an old ID is linked to the new
+  one. If another account already has the new ID, nothing is moved, both are
+  named in the journal and the run fails.
+- **Held names → published.** Every name the app holds goes to
+  `enrollment.heldNamesDir`, so sign-up refuses it.
+- **Careful by default.** New apps start in `dryRun` (logs what it would do,
+  changes nothing). Accounts the identity provider doesn't sign in (local,
+  service, bot) are never touched. No members file means nothing changes;
+  more blocks than `maxBlocksPerRun` applies none. A failed step doesn't stop
+  the others, and the unit fails so you notice.
+
+swag knows no app. The app is reached through an adapter, run in the same unit,
+so the app's credentials stay there. For an app with its accounts in SQL, give
+the queries:
+
+```nix
+services.swag.accounts.wiki = {
+  accessGroup = "members";
+  adapter.sql = {
+    identity = "subject";   # subjects are directory IDs ("name": usernames)
+    database = { type = "sqlite3"; path = "/var/lib/wiki/wiki.db"; };
+    queries = {
+      # (id, name, subject, blocked), one row per ID sign-in finds it by
+      list = "SELECT id, name, oidc_sub, disabled FROM users";
+      names = "SELECT name FROM users";
+      block = "UPDATE users SET disabled = 1 WHERE id = :id";
+      unblock = "UPDATE users SET disabled = 0 WHERE id = :id";
+      revoke = "DELETE FROM sessions WHERE user_id = :id";
+    };
+  };
+  serviceConfig = { User = "wiki"; ReadWritePaths = [ "/var/lib/wiki" ]; };
+  after = [ "wiki.service" ];
+  dryRun = false;  # after reading `journalctl -u swag-accounts-wiki` once
+};
+```
+
+Postgres works the same (`type = "postgres"`, `user`, `name`; peer
+authentication over the local socket). Anything else gets an adapter of its
+own, a command set as `adapter.command`:
+
+| Op | Output (one JSON object on stdout) | |
+|---|---|---|
+| `describe` | `{"protocol": 1, "identity": "subject"\|"name", "ops": [...]}` | required |
+| `list` | `{"accounts": [{"id", "name", "subjects": [...], "blocked"}]}` | required |
+| `names` | `{"names": [...]}` | required |
+| `block <id>`, `unblock <id>`, `revoke <id>` | `{}` | optional |
+| `link <id> <subject>` | `{}` | optional |
+
+`subjects` are what the app's sign-in finds the account by: directory IDs, or
+usernames for apps that match people by name. An account with none is left
+alone. Exit 0 means done (including "already so"); logs go to stderr. `block`
+must be reversible and close every way in that doesn't go through the identity
+provider. An app that can't block has its sessions revoked instead, if it can,
+and the identity provider is the rest.
 
 ## Going public
 
@@ -386,6 +453,7 @@ nix flake check
 | Check | What it proves |
 |---|---|
 | `directory` | Users, groups and initial passwords are provisioned; group members are published by directory ID; secrets are readable only by the unit that needs them; a password the user changed survives re-provisioning; provisioning is idempotent |
+| `accounts` | People outside the group are blocked and their sessions revoked, and lifted when back, while an admin's block and local accounts are left alone; an account known by an old ID is linked, a link whose new ID is taken is refused; more blocks than the limit apply none; no members file or subject map changes nothing; a failed step still publishes held names; dry run changes nothing; an app that can't block is matched by name and has its sessions revoked once; the SQL adapter on sqlite3 and postgres |
 | `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; deleting a directory user through nginx is refused with a reason while local users can be deleted, and the reset command rebuilds one with the same ID; directory users carry the directory's ID, OIDC clients send it, local users keep Authentik's, the subject map pairs old and new IDs, and the ID survives the user being re-created; a user deleted in lldap is removed from Authentik, a superuser is not; more removals than the limit apply none; no secret on a command line |
 | `authentik-oidc` | OIDC clients get the declared IDs, redirect URIs, grants, group bindings and secrets; discovery is served; no secret in the store or the process table |
 | `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in, even when a sync was already running; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; a name an app still holds is taken; the enrollment socket is closed to other users; no password on a command line or in the journal |
