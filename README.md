@@ -100,6 +100,7 @@ or a file you put there yourself.
 | [`directory`](docs/directory.md) | `services.swag.directory` | lldap with declarative users and groups, and an enrollment endpoint for new accounts | Admin UI on `ldap.<zone>`; Authentik's bind account is created for you |
 | [`authentik`](docs/authentik.md) | `services.swag.authentik` | Authentik server, worker and outposts; OIDC clients, forward-auth apps, MFA, invitations, public login | Syncs from the directory, registers its vhosts, adds tunnel ingress |
 | [`accounts`](docs/accounts.md) | `services.swag.accounts` | App-side accounts that follow the directory: blocks people who left a group, links old IDs, keeps held names | One unit per app; the app is reached through a small adapter |
+| [`alerts`](docs/alerts.md) | `services.swag.alerts` | A message when a unit fails and when it recovers, once per streak, through Apprise (ntfy, Matrix, email, …) or a command | Watches the stack's own units, or every service |
 | `default` | all of the above | plus [nixos-cloudflared](https://github.com/fortesoft-co/nixos-cloudflared) for the tunnel (off until you enable it) | |
 
 ## Quick start
@@ -114,7 +115,7 @@ or a file you put there yourself.
     nixosConfigurations.gateway = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
-        # Everything; or pick nixosModules.dns, .web, .directory, .authentik, .accounts.
+        # Everything; or pick nixosModules.dns, .web, .directory, .authentik, .accounts, .alerts.
         nixos-swag.nixosModules.default
         ./gateway.nix
       ];
@@ -227,6 +228,8 @@ in nixos-swag.
   directory sync, user IDs, invitations, MFA, going public.
 - **[accounts](docs/accounts.md)**: blocking, linking and held names in the
   apps themselves; the SQL adapter and writing your own.
+- **[alerts](docs/alerts.md)**: hearing about failures, once, through
+  any service Apprise speaks.
 - **[Keeping state](docs/state.md)**: one path for everything the stack
   remembers, and moving a running host onto it.
 
@@ -246,6 +249,7 @@ nix flake check
 | `authentik-directory` | Authentik's bind account gets its managed password; users and group memberships sync from lldap into Authentik; a password set in Authentik is written back to lldap; deleting a directory user through nginx is refused with a reason while local users can be deleted, and the reset command rebuilds one with the same ID; directory users carry the directory's ID, OIDC clients send it, local users keep Authentik's, the subject map pairs old and new IDs, and the ID survives the user being re-created; a user deleted in lldap is removed from Authentik, a superuser is not; more removals than the limit apply none; no secret on a command line |
 | `authentik-oidc` | OIDC clients get the declared IDs, redirect URIs, grants, group bindings and secrets; discovery is served; no secret in the store or the process table |
 | `authentik-enrollment` | An invitation creates the account in the directory with its groups, and it syncs and logs in, even when a sync was already running; the form reports a taken username or short password without writing anything; a used invitation is refused; logins outside the access group wait for approval; an invitation can't grant other groups; a name an app still holds is taken; the enrollment socket is closed to other users; no password on a command line or in the journal |
+| `alerts` | A failing unit sends one alert, with its journal lines, through Apprise and a command; failing again sends nothing; the first success says it recovered; scope `swag` leaves other units alone and `all` watches every one, early-boot oneshots included without restarting them; an undelivered alert is retried; alert units never alert about themselves; the Apprise URLs are on no command line and in no journal |
 | `docs` | Every option of every module is in its page under `docs/`; every link and heading anchor in the docs resolves (no VM) |
 | `authentik-public` | The public name resolves locally; the admin interface is refused through the tunnel only; the local name redirects; logins without a second factor are sent to enrollment |
 

@@ -25,6 +25,7 @@
         web = ./modules/web;
         directory = ./modules/directory;
         accounts = ./modules/accounts;
+        alerts = ./modules/alerts;
         authentik = {
           imports = [
             ./modules/authentik
@@ -38,6 +39,7 @@
             self.nixosModules.directory
             self.nixosModules.authentik
             self.nixosModules.accounts
+            self.nixosModules.alerts
             nixos-cloudflared.nixosModules.default
           ];
         };
@@ -51,6 +53,7 @@
           directory = import ./tests/directory.nix { inherit pkgs self; };
           accounts = import ./tests/accounts.nix { inherit pkgs self; };
           state = import ./tests/state.nix { inherit pkgs self; };
+          alerts = import ./tests/alerts.nix { inherit pkgs self; };
           docs = import ./tests/docs.nix { inherit pkgs self; };
           authentik-directory = import ./tests/authentik-directory.nix { inherit pkgs self; };
           authentik-oidc = import ./tests/authentik-oidc.nix { inherit pkgs self; };
