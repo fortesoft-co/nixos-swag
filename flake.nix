@@ -51,6 +51,7 @@
           directory = import ./tests/directory.nix { inherit pkgs self; };
           accounts = import ./tests/accounts.nix { inherit pkgs self; };
           state = import ./tests/state.nix { inherit pkgs self; };
+          docs = import ./tests/docs.nix { inherit pkgs self; };
           authentik-directory = import ./tests/authentik-directory.nix { inherit pkgs self; };
           authentik-oidc = import ./tests/authentik-oidc.nix { inherit pkgs self; };
           authentik-public = import ./tests/authentik-public.nix { inherit pkgs self; };

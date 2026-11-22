@@ -6,7 +6,7 @@ with lib;
   options.services.swag.stateDir = mkOption {
     type = types.nullOr types.str;
     default = null;
-    example = "/Volumes/Server/swag";
+    example = "/srv/swag";
     description = ''
       Where nixos-swag keeps persistent state: authentik/, lldap/ and
       accounts/ under it, so a reinstalled host with the same config and

@@ -182,8 +182,8 @@ in
               type = types.str;
               default = "0.0.0.0:3389";
               description = ''
-                Listen address for the LDAP outpost. LDAP clients (Nextcloud,
-                Gitea, Jellyfin, ...) bind here. The default 0.0.0.0:3389
+                Listen address for the LDAP outpost. Apps that sign people
+                in over LDAP bind here. The default 0.0.0.0:3389
                 exposes it on the LAN — gate it via firewall or bind loopback +
                 a tunnel for apps that don't run on this host. Port 3389 avoids
                 the privileged 389.

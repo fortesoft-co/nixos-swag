@@ -187,7 +187,7 @@ let
         serviceConfig = mkOption {
           type = types.attrs;
           default = { };
-          example = literalExpression ''{ User = "gitea"; Group = "gitea"; }'';
+          example = literalExpression ''{ User = "wiki"; Group = "wiki"; }'';
           description = ''
             Settings for the unit the run and the adapter share: the user
             that can reach the app, credentials (LoadCredential), writable
@@ -198,7 +198,7 @@ let
         after = mkOption {
           type = types.listOf types.str;
           default = [ ];
-          example = [ "gitea.service" ];
+          example = [ "wiki.service" ];
           description = "Units the app needs to be up first.";
         };
 
