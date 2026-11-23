@@ -1,7 +1,8 @@
 # services.swag.authentik.oidcClients: each client becomes an OAuth2
 # provider + application with the declared redirect URIs, group bindings and
 # the client secret from its file, and serves a discovery document at
-# <url>/application/o/<slug>/.
+# <url>/application/o/<slug>/. Forward-auth apps (services.swag.authentik.apps)
+# get the same group bindings.
 { pkgs, self }:
 pkgs.testers.runNixOSTest {
   name = "swag-authentik-oidc";
@@ -25,6 +26,7 @@ pkgs.testers.runNixOSTest {
         before = [
           "authentik-secrets.service"
           "authentik-provider-secret-setup.service"
+          "authentik-outpost-setup.service"
         ];
         serviceConfig.Type = "oneshot";
         script = ''
@@ -35,6 +37,7 @@ pkgs.testers.runNixOSTest {
           echo 'test-api-token-0123456789' > /run/test-secrets/ak-token
           echo 'notes-client-secret-0123456789' > /run/test-secrets/notes
           echo 'wiki-client-secret-0123456789' > /run/test-secrets/wiki
+          echo 'proxy-outpost-token-0123456789abcdef' > /run/test-secrets/proxy-token
         '';
       };
       systemd.services.authentik-secrets.requires = [ "test-secrets.service" ];
@@ -48,6 +51,15 @@ pkgs.testers.runNixOSTest {
           passwordFile = "/run/test-secrets/ak-admin";
           tokenFile = "/run/test-secrets/ak-token";
         };
+        outposts.proxy = {
+          enable = true;
+          tokenKeyFile = "/run/test-secrets/proxy-token";
+        };
+        apps.dash = {
+          host = "https://dash.example.com";
+          groups = [ "authentik Admins" ];
+        };
+        apps.open.host = "https://open.example.com";
         oidcClients = {
           notes = {
             name = "Notes";
@@ -104,6 +116,15 @@ pkgs.testers.runNixOSTest {
         bindings = get(f"/policies/bindings/?target={wiki_app['pk']}")["results"]
         assert [b["group_obj"]["name"] for b in bindings] == ["authentik Admins"], bindings
         assert get(f"/policies/bindings/?target={app['pk']}")["results"] == [], "notes should be open to everyone"
+
+    with subtest("forward-auth apps carry their group restriction"):
+        dash = get("/core/applications/dash/")
+        assert dash["provider_obj"]["name"] == "dash", dash
+        assert dash["policy_engine_mode"] == "any", dash
+        bindings = get(f"/policies/bindings/?target={dash['pk']}")["results"]
+        assert [b["group_obj"]["name"] for b in bindings] == ["authentik Admins"], bindings
+        open_app = get("/core/applications/open/")
+        assert get(f"/policies/bindings/?target={open_app['pk']}")["results"] == [], "open should be open to everyone"
 
     with subtest("discovery documents are served under the configured url"):
         doc = json.loads(machine.succeed(

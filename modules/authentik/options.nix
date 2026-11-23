@@ -438,6 +438,17 @@ in
               the host URL.
             '';
           };
+          groups = mkOption {
+            type = types.listOf types.str;
+            default = [ ];
+            example = [ "admins" ];
+            description = ''
+              Groups allowed through the gate; members of any of them pass,
+              everyone else gets Authentik's "access denied" page. Empty =
+              every user who can log in. The groups must exist in Authentik
+              (e.g. synced from the directory) when the blueprint applies.
+            '';
+          };
         };
       });
       default = { };

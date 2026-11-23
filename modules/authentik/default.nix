@@ -927,6 +927,7 @@ print(f"source {slug}: sync queued")
       "      internal_host: \"${if app.internalHost != null then app.internalHost else ""}\""
       "      mode: ${app.mode}"
       "  - model: authentik_core.application"
+      "    id: app-${name}"
       "    identifiers:"
       "      slug: \"${name}\""
       "    state: present"
@@ -934,7 +935,19 @@ print(f"source {slug}: sync queued")
       "      name: \"${name}\""
       "      provider: !KeyOf provider-${name}"
       "      meta_launch_url: \"${if app.metaLaunchUrl != null then app.metaLaunchUrl else app.host}\""
-    ]) cfg.apps)
+      "      policy_engine_mode: any"
+    ]
+    # One binding per allowed group: members of any of them pass.
+    ++ concatLists (imap0 (i: g: [
+      "  - model: authentik_policies.policybinding"
+      "    identifiers:"
+      "      target: !KeyOf app-${name}"
+      "      group: !Find [authentik_core.group, [name, ${builtins.toJSON g}]]"
+      "    state: present"
+      "    attrs:"
+      "      order: ${toString i}"
+    ]) app.groups)
+    ) cfg.apps)
     ++ [
       "  - model: authentik_outposts.outpost"
       "    identifiers:"

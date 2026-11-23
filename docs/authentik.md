@@ -112,7 +112,9 @@ services.swag.authentik = {
 ```
 
 Each app gets a proxy provider and an application, assigned to the proxy
-outpost. `authentik-outpost-setup` creates the outpost and sets its token
+outpost. `groups` limits who gets through, as with OIDC clients:
+`apps.dashboard.groups = [ "admins" ];` lets only that group in, and
+everyone else who signs in sees Authentik's "access denied" page. `authentik-outpost-setup` creates the outpost and sets its token
 from the file on every boot, so a rebuilt database needs nothing by hand.
 `mode = "proxy"` makes the outpost itself the proxy (to `internalHost`)
 instead of nginx.
@@ -332,6 +334,7 @@ Turn on `mfa.enforce` before going public.
 | `apps.<name>.internalHost` | `null` | Backend, for `mode = "proxy"` only. |
 | `apps.<name>.mode` | `"forward_single"` | `forward_single`, `forward_domain` or `proxy`. |
 | `apps.<name>.metaLaunchUrl` | `null` | Launcher URL; defaults to `host`. |
+| `apps.<name>.groups` | `[ ]` | Groups allowed through the gate; empty = everyone. |
 | `directorySource.enable` | `false` | Sync users and groups from LDAP. |
 | `directorySource.name` | `"Directory"` | Source name in Authentik. |
 | `directorySource.slug` | `"directory"` | Source slug, its stable identifier. |
