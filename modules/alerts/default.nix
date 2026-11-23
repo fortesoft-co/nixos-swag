@@ -86,12 +86,14 @@ let
     # Ordered after early boot and the network, but pulling in none of it:
     # with default dependencies, an alert for an early-boot oneshot would
     # require sysinit.target while it is still starting, which starts that
-    # oneshot again, which sets off the alert again.
+    # oneshot again, which sets off the alert again. network.target, not
+    # network-online.target: waiting for the latter would mean pulling it
+    # in; alert.py's retries cover a network that isn't up yet.
     unitConfig.DefaultDependencies = false;
     after = [
       "sysinit.target"
       "basic.target"
-      "network-online.target"
+      "network.target"
     ];
     conflicts = [ "shutdown.target" ];
     before = [ "shutdown.target" ];
