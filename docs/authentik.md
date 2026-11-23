@@ -242,8 +242,9 @@ On the next deploy, with no dashboard visits:
    [nixos-cloudflared](https://github.com/fortesoft-co/nixos-cloudflared)
    finds the tunnel named after the host, or creates it, keeps its token
    root-only and hands it to `cloudflared` as a systemd credential.
-2. **Authentik joins it.** `auth.example.com` is added to the tunnel's
-   ingress, pointed at nginx over HTTPS.
+2. **Authentik joins it** as a [public site](web.md#public-sites):
+   `auth.example.com` is added to the tunnel's ingress, pointed at nginx
+   over HTTPS.
 3. **The public record appears**: a proxied CNAME to the tunnel, in
    whichever of your zones holds the name.
 4. **The LAN takes the short way.** [dns](dns.md) answers

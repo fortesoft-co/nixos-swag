@@ -86,7 +86,6 @@ let
   webDeclared = options.services ? swag.web;
   hasLocalweb = options.services ? swag.web && config.services.swag.web.enable;
   hasLocaldns = options.services ? swag.dns && config.services.swag.dns.enable;
-  dnsDeclared = options.services ? swag.dns;
   hasCloudflared = options.services ? cloudflared && config.services.cloudflared.enable;
   directoryDeclared = options.services ? swag.directory;
   hasDirectory = directoryDeclared && config.services.swag.directory.enable;
@@ -275,18 +274,14 @@ let
     };
   };
 
-  # The public login vhost: the admin vhost over TLS, the admin interface
-  # refused to tunnel requests (cloudflared sets CF-Connecting-IP and
-  # Cloudflare overwrites any client-supplied one; LAN requests never carry
-  # it), and the client address taken from that header.
+  # The public login vhost: the admin vhost made public on swag web (TLS,
+  # local record, tunnel ingress, client address from the tunnel's header),
+  # with the admin interface refused to tunnel requests (cloudflared sets
+  # CF-Connecting-IP and Cloudflare overwrites any client-supplied one; LAN
+  # requests never carry it).
   publicDomain = cfg.dashboard.publicDomain;
   publicVhost = adminVhost // {
-    tls = true;
-    extraConfig = ''
-      set_real_ip_from 127.0.0.1;
-      set_real_ip_from ::1;
-      real_ip_header CF-Connecting-IP;
-    '';
+    public = true;
     extraLocations = adminVhost.extraLocations // {
       "/if/admin/" = {
         proxyPass = "http://127.0.0.1:9000";
@@ -1383,19 +1378,10 @@ in
           adminVhost // { tls = mkDefault cfg.dashboard.tls; };
     }))
 
-    # ── Public login: TLS vhost, local record, tunnel ingress ───────────────
+    # ── Public login: a public vhost (swag web adds the record and ingress) ─
     (optionalAttrs webDeclared (mkIf (hasLocalweb && publicDomain != null) {
       services.swag.web.vhosts.${publicDomain} = publicVhost;
     }))
-    (optionalAttrs dnsDeclared (mkIf (hasLocaldns && publicDomain != null) {
-      services.swag.dns.extraRecords.${publicDomain} = mkDefault config.services.swag.dns.address;
-    }))
-    (mkIf (hasCloudflared && publicDomain != null) {
-      services.cloudflared.tunnels."${config.networking.hostName}".ingress.${publicDomain} = {
-        service = "https://127.0.0.1:443";
-        originRequest.originServerName = publicDomain;
-      };
-    })
 
     # ── Directory source: bind password + first sync ────────────────────────
     (mkIf ds.enable {

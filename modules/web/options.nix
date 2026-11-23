@@ -59,9 +59,44 @@ in
       description = "ACME/DNS-01 settings for the TLS vhost registry.";
     };
 
+    # ── The client's address behind a tunnel ─────────────────────────────────
+    realIp = mkOption {
+      type = types.submodule {
+        options = {
+          header = mkOption {
+            type = types.nullOr types.str;
+            default = "CF-Connecting-IP";
+            description = ''
+              Request header holding the client's address, set by the tunnel
+              or proxy in front of nginx. Cloudflare's tunnel sets
+              CF-Connecting-IP and overwrites any value a client sends.
+              nginx takes the client address from it ($remote_addr, so
+              access logs, X-Real-IP and X-Forwarded-For to the backend)
+              only for requests from `trustedProxies`; anyone else's header
+              is ignored. null = always use the connection's address.
+            '';
+          };
+          trustedProxies = mkOption {
+            type = types.listOf types.str;
+            default = [
+              "127.0.0.1"
+              "::1"
+            ];
+            description = ''
+              Addresses (or CIDR ranges) whose `header` is believed: where
+              the tunnel or proxy connects to nginx from. Loopback by
+              default, for a tunnel daemon on this host.
+            '';
+          };
+        };
+      };
+      default = { };
+      description = "Where nginx learns the client's address behind a tunnel.";
+    };
+
     vhosts = mkOption {
       type = types.attrsOf (
-        types.submodule {
+        types.submodule ({ config, ... }: {
           options = {
             host = mkOption {
               type = types.str;
@@ -166,9 +201,26 @@ in
               '';
             };
 
-            tls = mkOption {
+            public = mkOption {
               type = types.bool;
               default = false;
+              description = ''
+                Reachable from the internet under the same name (split
+                horizon). Implies `tls`. With swag dns on this host, the name
+                is answered locally with this host, so LAN clients come
+                straight here; with a Cloudflare tunnel on this host
+                (services.cloudflared), the tunnel gets an ingress entry for
+                it, pointed at nginx over HTTPS, and nixos-cloudflared adds
+                the public DNS record. Without a tunnel, exposing it is up to
+                you (a warning says so). Put a login in front of anything
+                that doesn't have one (services.swag.authentik.apps).
+              '';
+            };
+
+            tls = mkOption {
+              type = types.bool;
+              default = config.public;
+              defaultText = literalExpression "config.public";
               description = ''
                 Terminate TLS with an ACME-issued certificate for this vhost's
                 server_name. Requires services.swag.web.acme.dnsCredentials
@@ -182,7 +234,7 @@ in
               '';
             };
           };
-        }
+        })
       );
       default = { };
       description = ''

@@ -1,5 +1,10 @@
 # Local web — shared nginx backbone + the subdomain port + vhost registry.
 #
+# Public vhosts (public = true) also get a local record from swag dns and an
+# ingress entry on the host's Cloudflare tunnel, into nginx over HTTPS;
+# realIp takes the client address from the tunnel's header, believed from
+# loopback only.
+#
 # Centralizes nginx enable + recommended settings + ACME, and provides
 # services.swag.web.vhosts — a server_name → { host, port, scheme?, extraLocations?,
 # extraConfig?, basicAuthFile? } map (the nginx analog of cloudflared's ingress)
@@ -16,6 +21,7 @@
 # htpasswd file the host provides at runtime.
 {
   config,
+  options,
   lib,
   pkgs,
   ...
@@ -30,6 +36,21 @@ let
   tlsVhosts = filterAttrs (_: v: v.tls) cfg.vhosts;
   haveTlsVhosts = tlsVhosts != { };
   certName = name: builtins.replaceStrings [ "." ] [ "-" ] name;
+
+  # Public vhosts: answered locally by swag dns (split horizon) and added to
+  # the Cloudflare tunnel's ingress when this host runs one. The other
+  # modules are optional: their options are only defined when they're
+  # imported, hence the guards (on options, never config, so no recursion).
+  publicVhosts = filterAttrs (_: v: v.public) cfg.vhosts;
+  dnsDeclared = options.services ? swag.dns;
+  hasDns = dnsDeclared && config.services.swag.dns.enable;
+  hasTunnel = options.services ? cloudflared && config.services.cloudflared.enable;
+  # nixos-cloudflared names the tunnel; without it, the host's name.
+  tunnelName =
+    if options.services ? cloudflared-tunnel && config.services.cloudflared-tunnel.enable then
+      config.services.cloudflared-tunnel.name
+    else
+      config.networking.hostName;
 
   # Root "/" location for a vhost: proxyPass to the backend, recommended proxy
   # headers, and proxy_ssl_verify off when the upstream speaks HTTPS (self-signed
@@ -69,6 +90,14 @@ in
         recommendedOptimisation = true;
         recommendedProxySettings = true;
         recommendedTlsSettings = true;
+        # The client's address from the tunnel's header, believed only from
+        # the tunnel's side (loopback by default): a LAN client sending the
+        # header keeps its own address. $remote_addr then carries it, so
+        # logs and the X-Real-IP / X-Forwarded-For sent to backends do too.
+        appendHttpConfig = optionalString (cfg.realIp.header != null) (
+          concatMapStrings (p: "set_real_ip_from ${p};\n") cfg.realIp.trustedProxies
+          + "real_ip_header ${cfg.realIp.header};\n"
+        );
       };
 
             # One virtualHost per registered vhost on the shared subdomain port 80
@@ -135,8 +164,36 @@ in
       networking.firewall.allowedTCPPorts = [ 443 ];
     })
 
+    # Public vhosts: the local answer and the tunnel's way in.
+    (optionalAttrs dnsDeclared (mkIf (hasDns && publicVhosts != { }) {
+      services.swag.dns.extraRecords = mapAttrs (
+        _: _: mkDefault config.services.swag.dns.address
+      ) publicVhosts;
+    }))
+    (mkIf (hasTunnel && publicVhosts != { }) {
+      # Into nginx over HTTPS, with the vhost's name for SNI and the
+      # certificate check, so the tunnel takes the same path as the LAN.
+      services.cloudflared.tunnels.${tunnelName}.ingress = mapAttrs (name: _: {
+        service = "https://127.0.0.1:443";
+        originRequest.originServerName = name;
+      }) publicVhosts;
+    })
+
     {
+      warnings = optional (publicVhosts != { } && !hasTunnel)
+        "services.swag.web: ${concatStringsSep ", " (attrNames publicVhosts)} ${
+          if length (attrNames publicVhosts) == 1 then "is" else "are"
+        } public, but this host runs no Cloudflare tunnel (services.cloudflared), so no ingress is created: expose ${
+          if length (attrNames publicVhosts) == 1 then "it" else "them"
+        } yourself.";
+
       assertions = [
+        {
+          assertion = all (v: v.tls) (attrValues publicVhosts);
+          message = "services.swag.web: public vhosts need tls (the tunnel reaches them over HTTPS): ${
+            concatStringsSep ", " (attrNames (filterAttrs (_: v: !v.tls) publicVhosts))
+          }.";
+        }
         {
           assertion = !haveTlsVhosts || cfg.acme.dnsCredentials != { };
           message = "services.swag.web.vhosts.*.tls requires services.swag.web.acme.dnsCredentials (runtime files holding the DNS API credentials the cert's zone needs — for Cloudflare, CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL or a scoped CLOUDFLARE_DNS_API_TOKEN).";

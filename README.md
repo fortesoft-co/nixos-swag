@@ -96,7 +96,7 @@ or a file you put there yourself.
 | Module | Options | What it does | With the others on the host |
 |---|---|---|---|
 | [`dns`](docs/dns.md) | `services.swag.dns` | dnsmasq for the internal zone, extra local records, upstream forwarding | Other modules derive their default names from the zone (`auth.lan.example.com`, `ldap.lan.example.com`) |
-| [`web`](docs/web.md) | `services.swag.web` | nginx vhost registry, ACME DNS-01 certificates, firewall | Admin UIs and forward-auth gates register themselves here |
+| [`web`](docs/web.md) | `services.swag.web` | nginx vhost registry, ACME DNS-01 certificates, public sites through the tunnel, real client IPs, firewall | Admin UIs and forward-auth gates register themselves here |
 | [`directory`](docs/directory.md) | `services.swag.directory` | lldap with declarative users and groups, and an enrollment endpoint for new accounts | Admin UI on `ldap.<zone>`; Authentik's bind account is created for you |
 | [`authentik`](docs/authentik.md) | `services.swag.authentik` | Authentik server, worker and outposts; OIDC clients, forward-auth apps, MFA, invitations, public login | Syncs from the directory, registers its vhosts, adds tunnel ingress |
 | [`accounts`](docs/accounts.md) | `services.swag.accounts` | App-side accounts that follow the directory: blocks people who left a group, links old IDs, keeps held names | One unit per app; the app is reached through a small adapter |
@@ -221,7 +221,7 @@ in nixos-swag.
   apps, from the secrets to day-to-day operations.
 - **[dns](docs/dns.md)**: the internal zone, local records, why a domain
   you own.
-- **[web](docs/web.md)**: vhosts, certificates, shaping a vhost.
+- **[web](docs/web.md)**: vhosts, certificates, public sites, the client's address, shaping a vhost.
 - **[directory](docs/directory.md)**: users and groups, what config owns,
   group files, enrollment and held names.
 - **[authentik](docs/authentik.md)**: OIDC clients, forward auth, the

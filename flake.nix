@@ -54,6 +54,7 @@
           accounts = import ./tests/accounts.nix { inherit pkgs self; };
           state = import ./tests/state.nix { inherit pkgs self; };
           alerts = import ./tests/alerts.nix { inherit pkgs self; };
+          web = import ./tests/web.nix { inherit pkgs self; };
           docs = import ./tests/docs.nix { inherit pkgs self; };
           authentik-directory = import ./tests/authentik-directory.nix { inherit pkgs self; };
           authentik-oidc = import ./tests/authentik-oidc.nix { inherit pkgs self; };
