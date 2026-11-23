@@ -42,6 +42,13 @@ pkgs.testers.runNixOSTest {
           initialPasswordFile = "/run/test-secrets/alice";
         };
         users.bob.email = "bob@example.com";
+        # lldap's built-in admin: a real address and a group, its password
+        # still adminPasswordFile's.
+        groups.admins = { };
+        users.admin = {
+          email = "root@example.com";
+          groups = [ "admins" ];
+        };
       };
     };
 
@@ -61,6 +68,16 @@ pkgs.testers.runNixOSTest {
         machine.succeed(
             f"ldapsearch {ldap} {admin} -b ou=people,dc=example,dc=com '(uid=bob)' mail"
             " | grep -F 'mail: bob@example.com'"
+        )
+
+    with subtest("the built-in admin takes its declared email and groups"):
+        machine.succeed(
+            f"ldapsearch {ldap} {admin} -b ou=people,dc=example,dc=com '(uid=admin)' mail"
+            " | grep -F 'mail: root@example.com'"
+        )
+        machine.succeed(
+            f"ldapsearch {ldap} {admin} -b ou=groups,dc=example,dc=com '(cn=admins)' member"
+            " | grep -F 'member: uid=admin,ou=people,dc=example,dc=com'"
         )
 
     with subtest("secrets are readable only by the unit that needs them"):
@@ -89,7 +106,7 @@ pkgs.testers.runNixOSTest {
         published = machine.succeed("cat /run/swag-directory/groups/family").strip()
         assert published == f"{uuid} alice", f"published {published!r}, LDAP says {uuid!r}"
         assert machine.succeed("stat -c %a /run/swag-directory/groups/family").strip() == "644"
-        assert machine.succeed("ls -A /run/swag-directory/groups").split() == ["family"]
+        assert machine.succeed("ls -A /run/swag-directory/groups").split() == ["admins", "family"]
         machine.fail("su mallory -c 'touch /run/swag-directory/groups/family'")
   '';
 }

@@ -44,6 +44,12 @@ lldap or through Authentik's write-back, a deploy never touches it again.
 `passwordFile` is for service accounts other modules bind as, such as
 Authentik's own.
 
+lldap's built-in admin (`adminUsername`) can be declared like anyone else
+to set its email, display name and groups, e.g. to give it a real address
+(lldap seeds `admin@example.com`) or put it in an `admins` group that apps
+map to their admin role. Its password stays `adminPasswordFile`'s, so it
+takes neither password option.
+
 The admin UI is on `ldap.<internalDomain>` when [dns](dns.md) and
 [web](web.md) are on the host (`dashboard.domain` to choose another name),
 and the admin password is entered there, so turn on `dashboard.tls`.

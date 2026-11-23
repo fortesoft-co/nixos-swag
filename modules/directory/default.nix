@@ -172,6 +172,15 @@ in
           message = "services.swag.directory.users: set initialPasswordFile or passwordFile on a user, not both.";
         }
         {
+          # lldap's built-in admin may be declared for its email, name and
+          # groups; its password is adminPasswordFile's.
+          assertion =
+            !(cfg.users ? ${cfg.adminUsername})
+            || (cfg.users.${cfg.adminUsername}.initialPasswordFile == null
+              && cfg.users.${cfg.adminUsername}.passwordFile == null);
+          message = "services.swag.directory.users.${cfg.adminUsername} is lldap's built-in admin: its password is adminPasswordFile. Declare its email, display name and groups only.";
+        }
+        {
           assertion = all (g: builtins.match "[A-Za-z0-9_][A-Za-z0-9._-]*" g != null) (attrNames cfg.groups);
           message = "services.swag.directory.groups: names may use letters, digits, '.', '_' and '-', and not start with '.' or '-' (each becomes a file under groupMembers).";
         }
